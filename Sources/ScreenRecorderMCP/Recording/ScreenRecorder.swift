@@ -78,8 +78,8 @@ actor ScreenRecorder {
         // Store active recording
         activeRecordings[session.id] = activeRecording
 
-        // Set up stream output
-        try stream.addStreamOutput(activeRecording, type: .screen, sampleHandlerQueue: .global(qos: .userInitiated))
+        // Set up stream output with dedicated queue (Apple best practice - don't use global queues)
+        try stream.addStreamOutput(activeRecording, type: .screen, sampleHandlerQueue: activeRecording.frameQueue)
 
         // Start capture
         try await stream.startCapture()
@@ -147,6 +147,10 @@ actor ScreenRecorder {
         let frameCount = await activeRecording.writer.currentFrameCount
         activeRecording.session.setFrameCount(frameCount)
 
+        // Log frame delivery statistics for diagnostics
+        let stats = activeRecording.getFrameStats()
+        FileHandle.standardError.write(Data("Frame stats: total=\(stats.total) complete=\(stats.complete) idle=\(stats.idle) blank=\(stats.blank) written=\(frameCount)\n".utf8))
+
         // Mark session status based on whether there were issues
         if let error = streamStopError {
             // Recording completed but with issues - mark as completed with a warning
@@ -171,20 +175,39 @@ private class ActiveRecording: NSObject, SCStreamOutput, SCStreamDelegate, @unch
     let writer: SparseFrameWriter
     let config: RecordingConfig
 
+    /// Dedicated dispatch queue for frame processing (Apple best practice - don't use global queues)
+    let frameQueue: DispatchQueue
+
     /// Flag indicating the stream was stopped externally (not by us calling stopCapture)
     private(set) var wasStoppedExternally = false
     private(set) var externalStopError: Error?
     private let lock = NSLock()
+
+    /// Frame delivery tracking for diagnostics
+    private var totalFramesReceived: Int = 0
+    private var completeFrames: Int = 0
+    private var idleFrames: Int = 0
+    private var blankFrames: Int = 0
+    private var lastFrameTime: Date?
 
     init(session: RecordingSession, stream: SCStream?, writer: SparseFrameWriter, config: RecordingConfig) {
         self.session = session
         self.stream = stream
         self.writer = writer
         self.config = config
+        // Create dedicated queue for this recording session (Apple best practice)
+        self.frameQueue = DispatchQueue(label: "com.screen-recorder-mcp.frames.\(session.id)", qos: .userInitiated)
     }
 
     func setStream(_ stream: SCStream) {
         self.stream = stream
+    }
+
+    /// Get frame delivery statistics for diagnostics
+    func getFrameStats() -> (total: Int, complete: Int, idle: Int, blank: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (totalFramesReceived, completeFrames, idleFrames, blankFrames)
     }
 
     // MARK: - SCStreamDelegate
@@ -218,9 +241,62 @@ private class ActiveRecording: NSObject, SCStreamOutput, SCStreamDelegate, @unch
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         switch type {
         case .screen:
-            // Process frame synchronously
-            guard CMSampleBufferDataIsReady(sampleBuffer),
-                  let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            // Track frame receipt
+            lock.lock()
+            totalFramesReceived += 1
+            lastFrameTime = Date()
+            lock.unlock()
+
+            // Check buffer validity first (Apple best practice)
+            guard sampleBuffer.isValid else {
+                FileHandle.standardError.write(Data("Warning: Received invalid sample buffer\n".utf8))
+                return
+            }
+
+            guard CMSampleBufferDataIsReady(sampleBuffer) else {
+                return
+            }
+
+            // Check frame status from attachments (Apple best practice)
+            // SCStreamFrameInfo.status tells us if this is a real frame or just idle/blank
+            if let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+               let attachments = attachmentsArray.first,
+               let statusRawValue = attachments[.status] as? Int,
+               let status = SCFrameStatus(rawValue: statusRawValue) {
+
+                lock.lock()
+                switch status {
+                case .complete:
+                    completeFrames += 1
+                case .idle:
+                    idleFrames += 1
+                    lock.unlock()
+                    // Idle means no change - don't process but don't log every time (too noisy)
+                    return
+                case .blank:
+                    blankFrames += 1
+                    lock.unlock()
+                    // Blank means empty content - skip
+                    return
+                case .suspended:
+                    lock.unlock()
+                    // Stream is suspended
+                    return
+                case .started:
+                    // First frame after start
+                    completeFrames += 1
+                case .stopped:
+                    lock.unlock()
+                    // Stream stopped
+                    FileHandle.standardError.write(Data("Info: Received frame with 'stopped' status\n".utf8))
+                    return
+                @unknown default:
+                    completeFrames += 1
+                }
+                lock.unlock()
+            }
+
+            guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
                 return
             }
 
