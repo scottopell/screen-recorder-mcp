@@ -60,16 +60,20 @@ actor ScreenRecorder {
             windowTitle: window.title ?? "Unknown"
         )
 
-        // Create the stream
-        let stream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
-
-        // Create active recording
+        // Create active recording first (needed as delegate)
+        // We'll set the stream after creation
         let activeRecording = ActiveRecording(
             session: session,
-            stream: stream,
+            stream: nil,  // Set below
             writer: writer,
             config: config
         )
+
+        // Create the stream with activeRecording as delegate to receive unexpected stop notifications
+        let stream = SCStream(filter: filter, configuration: streamConfig, delegate: activeRecording)
+
+        // Set the stream on activeRecording
+        activeRecording.setStream(stream)
 
         // Store active recording
         activeRecordings[session.id] = activeRecording
@@ -109,18 +113,48 @@ actor ScreenRecorder {
             throw RecordingError.sessionNotFound(targetId)
         }
 
-        // Stop the stream
-        try await activeRecording.stream.stopCapture()
+        // Check if stream was stopped externally (e.g., by another process's ScreenCaptureKit operations)
+        let externalStop = activeRecording.checkExternalStop()
+        var streamStopError: Error?
 
-        // Finalize the writer
-        _ = try await activeRecording.writer.finalize()
+        if externalStop.stopped {
+            // Stream was already stopped externally - log but continue to finalize
+            FileHandle.standardError.write(Data("Info: Stream was stopped externally, proceeding with finalization\n".utf8))
+            streamStopError = externalStop.error
+        } else {
+            // Try to stop the stream normally
+            do {
+                try await activeRecording.stream.stopCapture()
+            } catch {
+                // Stream may have been stopped by OS-level interference from another process
+                // Log the error but continue to finalize - we want to save what we captured
+                FileHandle.standardError.write(Data("Warning: stopCapture() failed: \(error.localizedDescription). Attempting to finalize recording anyway.\n".utf8))
+                streamStopError = error
+            }
+        }
+
+        // Always attempt to finalize the writer to save captured frames
+        // This is critical - even if stopCapture failed, we may have captured valuable frames
+        do {
+            _ = try await activeRecording.writer.finalize()
+        } catch {
+            // If finalization fails, try incremental manifest as last resort
+            FileHandle.standardError.write(Data("Warning: finalize() failed: \(error.localizedDescription). Attempting incremental manifest save.\n".utf8))
+            await activeRecording.writer.writeIncrementalManifest()
+        }
 
         // Update session with final frame count
         let frameCount = await activeRecording.writer.currentFrameCount
         activeRecording.session.setFrameCount(frameCount)
 
-        // Mark session as complete
-        activeRecording.session.complete()
+        // Mark session status based on whether there were issues
+        if let error = streamStopError {
+            // Recording completed but with issues - mark as completed with a warning
+            // The frames are still saved, just note the abnormal termination
+            activeRecording.session.completeWithWarning("Stream stopped abnormally: \(error.localizedDescription)")
+        } else {
+            activeRecording.session.complete()
+        }
 
         // Remove from active recordings
         activeRecordings.removeValue(forKey: targetId)
@@ -131,18 +165,55 @@ actor ScreenRecorder {
 
 // MARK: - Active Recording
 
-private class ActiveRecording: NSObject, SCStreamOutput, @unchecked Sendable {
+private class ActiveRecording: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     let session: RecordingSession
-    let stream: SCStream
+    private(set) var stream: SCStream!
     let writer: SparseFrameWriter
     let config: RecordingConfig
 
-    init(session: RecordingSession, stream: SCStream, writer: SparseFrameWriter, config: RecordingConfig) {
+    /// Flag indicating the stream was stopped externally (not by us calling stopCapture)
+    private(set) var wasStoppedExternally = false
+    private(set) var externalStopError: Error?
+    private let lock = NSLock()
+
+    init(session: RecordingSession, stream: SCStream?, writer: SparseFrameWriter, config: RecordingConfig) {
         self.session = session
         self.stream = stream
         self.writer = writer
         self.config = config
     }
+
+    func setStream(_ stream: SCStream) {
+        self.stream = stream
+    }
+
+    // MARK: - SCStreamDelegate
+
+    /// Called when the stream stops unexpectedly (e.g., due to external interference)
+    func stream(_ stream: SCStream, didStopWithError error: any Error) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        wasStoppedExternally = true
+        externalStopError = error
+
+        // Log the unexpected stop
+        FileHandle.standardError.write(Data("Warning: SCStream stopped unexpectedly: \(error.localizedDescription)\n".utf8))
+
+        // Trigger incremental manifest save to preserve what we have
+        Task {
+            await writer.writeIncrementalManifest()
+        }
+    }
+
+    /// Check if stream was stopped externally
+    func checkExternalStop() -> (stopped: Bool, error: Error?) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (wasStoppedExternally, externalStopError)
+    }
+
+    // MARK: - SCStreamOutput
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         switch type {

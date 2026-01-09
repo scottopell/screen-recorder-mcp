@@ -13,6 +13,10 @@ actor SparseFrameWriter {
     private var lastTimestamp: CMTime?
     private var metadata: RecordingMetadata
     private var isFinalized = false
+    private var lastIncrementalSaveFrame: Int = 0
+
+    /// How often to write incremental manifests (every N frames)
+    private let incrementalSaveInterval = 100
 
     struct FrameEntry: Codable {
         let index: Int
@@ -99,10 +103,74 @@ actor SparseFrameWriter {
 
                 lastTimestamp = presentationTime
                 frameIndex += 1
+
+                // Periodically save incremental manifest to protect against crashes/external termination
+                if frameIndex - lastIncrementalSaveFrame >= incrementalSaveInterval {
+                    writeIncrementalManifest()
+                    lastIncrementalSaveFrame = frameIndex
+                }
             } catch {
                 // Log error but continue - don't crash recording
                 FileHandle.standardError.write(Data("Warning: Failed to write frame \(frameIndex): \(error)\n".utf8))
             }
+        }
+    }
+
+    /// Write an incremental manifest to preserve recording state
+    /// Called periodically during recording and on unexpected stream termination
+    /// This allows recovery of partial recordings if the process crashes or stream is killed
+    func writeIncrementalManifest() {
+        guard !isFinalized && !frames.isEmpty else { return }
+
+        // Create a copy of frames with estimated duration for last frame
+        var incrementalFrames = frames
+        if !incrementalFrames.isEmpty && incrementalFrames[incrementalFrames.count - 1].duration == 0 {
+            // Estimate last frame duration as average of previous frames, or 0.1s default
+            let avgDuration: Double
+            if incrementalFrames.count > 1 {
+                let totalDuration = incrementalFrames.dropLast().reduce(0.0) { $0 + $1.duration }
+                avgDuration = totalDuration / Double(incrementalFrames.count - 1)
+            } else {
+                avgDuration = 0.1
+            }
+            incrementalFrames[incrementalFrames.count - 1].duration = avgDuration
+        }
+
+        // Calculate total duration
+        let totalDuration = incrementalFrames.reduce(0) { $0 + $1.duration }
+
+        // Update metadata copy
+        var incrementalMetadata = metadata
+        incrementalMetadata.total_duration = totalDuration
+        incrementalMetadata.frame_count = incrementalFrames.count
+
+        // Create incremental manifest with marker indicating it's partial
+        struct IncrementalManifest: Codable {
+            let version: String
+            let metadata: RecordingMetadata
+            let frames: [FrameEntry]
+            let incremental: Bool
+            let saved_at: String
+        }
+
+        let dateFormatter = ISO8601DateFormatter()
+        let manifest = IncrementalManifest(
+            version: "1.0",
+            metadata: incrementalMetadata,
+            frames: incrementalFrames,
+            incremental: true,
+            saved_at: dateFormatter.string(from: Date())
+        )
+
+        // Write to manifest.json (overwrites previous incremental saves)
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let manifestData = try encoder.encode(manifest)
+            let manifestPath = outputDirectory.appendingPathComponent("manifest.json")
+            try manifestData.write(to: manifestPath)
+        } catch {
+            FileHandle.standardError.write(Data("Warning: Failed to write incremental manifest: \(error)\n".utf8))
         }
     }
 

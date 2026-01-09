@@ -23,6 +23,7 @@ final class RecordingSession: @unchecked Sendable {
     private(set) var completedAt: Date?
     private(set) var totalPausedDuration: TimeInterval = 0
     private(set) var error: String?
+    private(set) var warning: String?  // Non-fatal issue during recording
     private(set) var frameCount: Int = 0
 
     private let lock = NSLock()
@@ -88,6 +89,23 @@ final class RecordingSession: @unchecked Sendable {
         completedAt = Date()
     }
 
+    /// Complete the recording but note that there was an abnormal condition
+    /// The recording is still usable but something unexpected happened (e.g., stream stopped externally)
+    func completeWithWarning(_ warning: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        // Account for any current pause
+        if status == .paused, let pauseStart = pausedAt {
+            totalPausedDuration += Date().timeIntervalSince(pauseStart)
+        }
+
+        // Store the warning but still mark as completed (frames are saved)
+        self.warning = warning
+        status = .completed
+        completedAt = Date()
+    }
+
     func fail(with error: String) {
         lock.lock()
         defer { lock.unlock() }
@@ -129,6 +147,10 @@ final class RecordingSession: @unchecked Sendable {
 
         if let err = error {
             dict["error"] = .string(err)
+        }
+
+        if let warn = warning {
+            dict["warning"] = .string(warn)
         }
 
         // Add manifest path for convenience
