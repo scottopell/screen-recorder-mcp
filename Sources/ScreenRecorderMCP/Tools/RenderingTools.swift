@@ -102,7 +102,19 @@ struct RenderRecordingTool: MCPTool {
             fileSize = 0
         }
 
-        return .json(.object([
+        // Generate HTML preview if demo_script exists
+        var previewPath: String? = nil
+        if manifest.demo_script != nil {
+            let htmlPath = recordingDir.appendingPathComponent("preview.html")
+            generateHTMLPreview(
+                manifest: manifest,
+                videoPath: outputPath,
+                outputPath: htmlPath
+            )
+            previewPath = htmlPath.path
+        }
+
+        var response: [String: JSONValue] = [
             "status": .string("completed"),
             "output_path": .string(outputPath.path),
             "format": .string(outputFormat.rawValue),
@@ -110,7 +122,13 @@ struct RenderRecordingTool: MCPTool {
             "frame_count": .int(manifest.frames.count),
             "duration": .double(manifest.metadata.total_duration),
             "message": .string("Video rendered successfully")
-        ]))
+        ]
+
+        if let preview = previewPath {
+            response["preview_path"] = .string(preview)
+        }
+
+        return .json(.object(response))
     }
 
     // MARK: - Private Helpers
@@ -220,6 +238,102 @@ struct RenderRecordingTool: MCPTool {
         return args
     }
 
+    private func generateHTMLPreview(manifest: SparseManifest, videoPath: URL, outputPath: URL) {
+        let videoFileName = videoPath.lastPathComponent
+        let duration = String(format: "%.1f", manifest.metadata.total_duration)
+        let width = manifest.metadata.width
+        let height = manifest.metadata.height
+
+        // Format demo script as JSON for display
+        var scriptJson = "[]"
+        if let script = manifest.demo_script {
+            let commands: [[String: Any]] = script.map { cmd in
+                if let text = cmd.text {
+                    return ["text": text]
+                } else if let delayMs = cmd.delay_ms {
+                    return ["delay_ms": delayMs]
+                }
+                return [:]
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: commands, options: .prettyPrinted),
+               let str = String(data: data, encoding: .utf8) {
+                scriptJson = str
+            }
+        }
+
+        let html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Demo Recording Preview</title>
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    padding: 20px;
+                    background: #1a1a1a;
+                    color: #e0e0e0;
+                    max-width: 1200px;
+                    margin: 0 auto;
+                }
+                h1 { color: #fff; margin-bottom: 5px; }
+                .meta { color: #888; margin-bottom: 20px; font-size: 14px; }
+                .container { display: flex; gap: 30px; flex-wrap: wrap; }
+                .video-section { flex: 1; min-width: 400px; }
+                .script-section { flex: 0 0 350px; }
+                video {
+                    width: 100%;
+                    max-width: \(width / 2)px;
+                    border: 1px solid #333;
+                    border-radius: 8px;
+                }
+                h3 { color: #4a9eff; margin-bottom: 10px; }
+                pre {
+                    background: #252525;
+                    padding: 15px;
+                    border-radius: 8px;
+                    overflow-x: auto;
+                    font-size: 13px;
+                    line-height: 1.5;
+                    max-height: 500px;
+                    overflow-y: auto;
+                }
+                .highlight-text { color: #98c379; }
+                .highlight-delay { color: #e5c07b; }
+            </style>
+        </head>
+        <body>
+            <h1>Demo Recording</h1>
+            <div class="meta">
+                Duration: \(duration)s &bull;
+                Resolution: \(width)x\(height) &bull;
+                Frames: \(manifest.frames.count)
+            </div>
+
+            <div class="container">
+                <div class="video-section">
+                    <h3>Recording</h3>
+                    <video controls autoplay loop muted>
+                        <source src="\(videoFileName)" type="video/mp4">
+                        Your browser does not support video playback.
+                    </video>
+                </div>
+
+                <div class="script-section">
+                    <h3>Demo Script</h3>
+                    <pre><code>\(scriptJson)</code></pre>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        do {
+            try html.write(to: outputPath, atomically: true, encoding: .utf8)
+        } catch {
+            FileHandle.standardError.write(Data("Warning: Failed to generate HTML preview: \(error)\n".utf8))
+        }
+    }
+
     private func runFFmpeg(arguments: [String]) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         // Find ffmpeg
         let ffmpegPath: String
@@ -310,6 +424,12 @@ struct SparseManifest: Codable {
     let version: String
     let metadata: SparseMetadata
     let frames: [SparseFrame]
+    let demo_script: [DemoScriptCommand]?
+}
+
+struct DemoScriptCommand: Codable {
+    let text: String?
+    let delay_ms: Int?
 }
 
 struct SparseMetadata: Codable {

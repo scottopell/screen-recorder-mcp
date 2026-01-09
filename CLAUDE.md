@@ -19,6 +19,7 @@ swift build -c release
 After building, restart Claude Code to pick up the new binary. Then use the MCP tools:
 
 ```
+# Manual recording flow
 1. check_permissions          → verify screen recording permission
 2. launch_terminal(bundle_id: "org.alacritty")  → get window_id + session_name
 3. start_recording(window_id: <id>)
@@ -26,19 +27,36 @@ After building, restart Claude Code to pick up the new binary. Then use the MCP 
 5. stop_recording()
 6. extract_frame(recording_path, timestamp: -1)  → verify frame
 7. render_recording(recording_path, output_format: "mp4")  → convert to video
+
+# Scripted demo flow (eliminates LLM API latency)
+1. launch_terminal(bundle_id: "org.alacritty")  → get window_id + session_name
+2. run_demo_script(window_id, session_name, commands: [...])  → records with precise timing
+3. render_recording(recording_path, output_format: "mp4")  → convert to video
+
+# Example run_demo_script commands array:
+# [
+#   { "text": "ls -la" },           ← Enter auto-appended
+#   { "delay_ms": 500 },            ← wait 500ms
+#   { "text": "echo 'Hello'" },
+#   { "delay_ms": 1500 },           ← longer delay for viewer
+#   { "text": "date" },
+#   { "delay_ms": 1000 }
+# ]
+# NOTE: Must include at least one delay_ms command or request is rejected
 ```
 
 ## Project Structure
 
 ```
 Sources/ScreenRecorderMCP/
-├── main.swift              # Entry point, registers 9 tools
+├── main.swift              # Entry point, registers 10 tools
 ├── MCPServer.swift         # JSON-RPC server over stdio
 ├── Models/
 │   ├── JSONRPCTypes.swift  # JSON-RPC 2.0 message types
 │   ├── MCPTypes.swift      # MCP protocol types
 │   ├── RecordingConfig.swift   # Window recording config
-│   └── RecordingSession.swift  # Session state management
+│   ├── RecordingSession.swift  # Session state management
+│   └── TerminalSessionStore.swift  # Terminal session → window_id mapping
 ├── Recording/
 │   ├── ScreenRecorder.swift    # ScreenCaptureKit wrapper (window-only)
 │   └── SparseFrameWriter.swift # PNG frame + JSON manifest writer
@@ -46,6 +64,7 @@ Sources/ScreenRecorderMCP/
 │   ├── PermissionTools.swift   # check_permissions
 │   ├── WindowTools.swift       # list_windows, launch_terminal, send_terminal_input, kill_terminal
 │   ├── RecordingTools.swift    # start_recording, stop_recording
+│   ├── DemoTools.swift         # run_demo_script (scripted demos with precise timing)
 │   ├── ProcessingTools.swift   # extract_frame
 │   └── RenderingTools.swift    # render_recording (sparse → video)
 └── Utils/
@@ -80,7 +99,7 @@ Use `render_recording` to convert to mp4/webm/gif (requires ffmpeg).
 
 - Recordings: `.screen-recordings/<recording_name>/`
 
-## 9 Tools
+## 10 Tools
 
 1. `check_permissions` - Pre-flight permission check
 2. `list_windows` - Debug/fallback window enumeration
@@ -89,8 +108,9 @@ Use `render_recording` to convert to mp4/webm/gif (requires ffmpeg).
 5. `kill_terminal` - Kill a terminal session by terminating its tmux session
 6. `start_recording` - Record a window by ID (outputs sparse PNG frames)
 7. `stop_recording` - Finalize recording, write manifest.json
-8. `extract_frame` - Get frame at timestamp (returns PNG path directly)
-9. `render_recording` - Convert sparse recording to mp4/webm/gif via ffmpeg
+8. `run_demo_script` - Execute scripted demos with precise timing (eliminates API latency)
+9. `extract_frame` - Get frame at timestamp (returns PNG path directly)
+10. `render_recording` - Convert sparse recording to mp4/webm/gif via ffmpeg
 
 ## Common Issues
 

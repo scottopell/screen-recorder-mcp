@@ -225,7 +225,18 @@ struct LaunchTerminalTool: MCPTool {
                 try await Task.sleep(nanoseconds: 100_000_000) // 100ms
             }
 
-            if let info = windowInfo {
+            if let info = windowInfo,
+               let windowId = info["window_id"]?.intValue,
+               let appName = info["app_name"]?.stringValue,
+               let bundleId = info["bundle_id"]?.stringValue {
+                // Register session for cross-tool lookup
+                await TerminalSessionStore.shared.register(
+                    sessionName: sessionName,
+                    windowId: UInt32(windowId),
+                    appName: appName,
+                    bundleId: bundleId
+                )
+
                 return .json(.object([
                     "status": .string("launched"),
                     "window": .object(info)
@@ -389,6 +400,9 @@ struct KillTerminalTool: MCPTool {
         } catch {
             return .error("Failed to kill session: \(error.localizedDescription)")
         }
+
+        // Remove from session store
+        await TerminalSessionStore.shared.remove(sessionName: sessionName)
 
         return .json(.object([
             "status": .string("killed"),

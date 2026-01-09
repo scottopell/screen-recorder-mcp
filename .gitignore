@@ -16,6 +16,7 @@ Package.resolved
 .idea/
 *.sublime-*
 .vscode/
+.claude/
 
 # Recordings (don't commit test recordings)
 .screen-recordings/
