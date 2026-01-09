@@ -18,7 +18,13 @@ https://github.com/user-attachments/assets/placeholder-upload-demo-controller-mp
 
 ### Output (Recording created by Claude)
 
-![Recording created by Claude](assets/demo-output.gif)
+https://github.com/user-attachments/assets/placeholder-upload-demo-output-mp4
+
+<details>
+<summary>Can't see the video? Click to download</summary>
+
+[Download demo-output.mp4](assets/demo-output.mp4) (18 KB)
+</details>
 
 *Claude used `launch_terminal`, `run_demo_script`, and `render_recording` to produce this output autonomously.*
 
