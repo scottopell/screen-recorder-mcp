@@ -1,15 +1,6 @@
 import Foundation
 import AVFoundation
 
-// MARK: - Recording Mode
-
-enum RecordingMode: String, Codable, Sendable {
-    case screen
-    case window
-    case app
-    case region
-}
-
 // MARK: - Video Codec
 
 enum VideoCodec: String, Codable, Sendable {
@@ -62,46 +53,10 @@ enum QualityPreset: String, Codable, Sendable {
     }
 }
 
-// MARK: - Audio Configuration
-
-struct AudioConfig: Sendable {
-    let captureSystemAudio: Bool
-    let captureMicrophone: Bool
-    let appAudioOnly: Bool
-
-    init(captureSystemAudio: Bool = false, captureMicrophone: Bool = false, appAudioOnly: Bool = false) {
-        self.captureSystemAudio = captureSystemAudio
-        self.captureMicrophone = captureMicrophone
-        self.appAudioOnly = appAudioOnly
-    }
-
-    static let none = AudioConfig()
-}
-
-// MARK: - Region Configuration
-
-struct RegionConfig: Sendable {
-    let x: Int
-    let y: Int
-    let width: Int
-    let height: Int
-
-    init(x: Int, y: Int, width: Int, height: Int) {
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-    }
-}
-
-// MARK: - Recording Configuration
+// MARK: - Recording Configuration (Window-only)
 
 struct RecordingConfig: Sendable {
-    let mode: RecordingMode
-    let displayID: UInt32?
-    let windowID: UInt32?
-    let appBundleID: String?
-    let region: RegionConfig?
+    let windowID: UInt32
 
     let outputDirectory: URL
     let filename: String?
@@ -111,18 +66,11 @@ struct RecordingConfig: Sendable {
     let fps: Int
 
     let captureCursor: Bool
-    let captureClicks: Bool
-    let audio: AudioConfig
-
     let maxDuration: TimeInterval?
     let sessionName: String?
 
     init(
-        mode: RecordingMode,
-        displayID: UInt32? = nil,
-        windowID: UInt32? = nil,
-        appBundleID: String? = nil,
-        region: RegionConfig? = nil,
+        windowID: UInt32,
         outputDirectory: URL? = nil,
         filename: String? = nil,
         format: OutputFormat = .mov,
@@ -130,16 +78,10 @@ struct RecordingConfig: Sendable {
         quality: QualityPreset = .high,
         fps: Int = 30,
         captureCursor: Bool = true,
-        captureClicks: Bool = false,
-        audio: AudioConfig = .none,
         maxDuration: TimeInterval? = nil,
         sessionName: String? = nil
     ) {
-        self.mode = mode
-        self.displayID = displayID
         self.windowID = windowID
-        self.appBundleID = appBundleID
-        self.region = region
         self.outputDirectory = outputDirectory ?? RecordingConfig.defaultOutputDirectory
         self.filename = filename
         self.format = format
@@ -147,14 +89,12 @@ struct RecordingConfig: Sendable {
         self.quality = quality
         self.fps = max(1, min(120, fps))
         self.captureCursor = captureCursor
-        self.captureClicks = captureClicks
-        self.audio = audio
         self.maxDuration = maxDuration
         self.sessionName = sessionName
     }
 
     static var defaultOutputDirectory: URL {
-        // Use .screen-recordings in current working directory (like Playwright)
+        // Use .screen-recordings in current working directory
         let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         return cwd.appendingPathComponent(".screen-recordings", isDirectory: true)
     }

@@ -108,7 +108,7 @@ final class RecordingSession: @unchecked Sendable {
             "started_at": .string(ISO8601DateFormatter().string(from: startedAt)),
             "output_path": .string(outputPath.path),
             "duration": .double(duration),
-            "mode": .string(config.mode.rawValue)
+            "window_id": .int(Int(config.windowID))
         ]
 
         if let name = config.sessionName {

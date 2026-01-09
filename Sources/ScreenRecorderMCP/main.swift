@@ -14,37 +14,22 @@ guard #available(macOS 12.3, *) else {
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)  // Don't show in dock
 
-// Register all tools
+// Register all tools (7 focused tools for window recording)
 let tools: [any MCPTool] = [
-    // Permission tools
+    // Permission check
     CheckPermissionsTool(),
-    RequestPermissionTool(),
 
-    // Window/display enumeration
-    ListDisplaysTool(),
+    // Window management
     ListWindowsTool(),
-    ListAppsTool(),
-
-    // App/window management
     LaunchAppTool(),
-    FocusWindowTool(),
-    AwaitWindowTool(),
+    TypeTextTool(),
 
     // Recording control
     StartRecordingTool(),
     StopRecordingTool(),
-    PauseRecordingTool(),
-    ResumeRecordingTool(),
-    CancelRecordingTool(),
-    GetRecordingStatusTool(),
 
-    // Query tools
-    ListRecordingsTool(),
-    GetRecordingInfoTool(),
-
-    // Processing tools
-    ExtractFrameTool(),
-    ExtractFramesTool()
+    // Frame extraction
+    ExtractFrameTool()
 ]
 
 // Create server

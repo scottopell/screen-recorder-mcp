@@ -1,6 +1,6 @@
 # Screen Recorder MCP Server
 
-A macOS screen recording solution for LLM agents via the Model Context Protocol (MCP). Enables Claude and other AI agents to record screen activity, verify actions visually, and process recordings.
+A focused macOS window recording solution for LLM agents via the Model Context Protocol (MCP). Record terminal sessions headlessly - no window focus required.
 
 ## Requirements
 
@@ -9,94 +9,59 @@ A macOS screen recording solution for LLM agents via the Model Context Protocol 
 
 ## Installation
 
-### Development
-
 ```bash
+# Development
 ./scripts/dev.sh
-```
 
-This builds the debug binary and updates `.mcp.json` to point to it.
-
-### Production
-
-```bash
+# Production
 ./scripts/install.sh
 ```
 
-This builds a release binary, installs to `/usr/local/bin/`, and updates `.mcp.json`.
+## Tools (7)
 
-## Available Tools
+| Tool | Description |
+|------|-------------|
+| `check_permissions` | Verify screen recording permission |
+| `list_windows` | List windows (debugging) |
+| `launch_app` | Launch terminal, get window_id + tty |
+| `type_text` | Send text to TTY (headless) |
+| `start_recording` | Record a window (works in background) |
+| `stop_recording` | Stop and finalize |
+| `extract_frame` | Extract frame for verification |
 
-### Permission Management
-- **check_permissions** - Check if required macOS permissions are granted
-- **request_permission** - Trigger permission request dialogs
+## Headless Recording
 
-### Display/Window Enumeration
-- **list_displays** - List all available displays/monitors
-- **list_windows** - List all visible windows available for recording
-- **list_apps** - List running applications that can be recorded
+The key feature: record terminal sessions without requiring window focus.
 
-### App/Window Management
-- **launch_app** - Launch an application and return its window info
-- **focus_window** - Bring a window to the front
-- **await_window** - Wait for a window matching criteria to appear
-
-### Recording Control
-- **start_recording** - Start recording screen, window, or application
-- **stop_recording** - Stop recording and finalize output file
-- **pause_recording** - Pause an active recording
-- **resume_recording** - Resume a paused recording
-- **cancel_recording** - Cancel recording and delete partial output
-- **get_recording_status** - Get status of active recording session(s)
-
-### Query Tools
-- **list_recordings** - List completed recordings in output directory
-- **get_recording_info** - Get detailed metadata about a recording
-
-### Frame Extraction
-- **extract_frame** - Extract a single frame from a recording
-- **extract_frames** - Extract multiple frames at regular intervals
-
-## Usage Example: Record a Terminal Window
+1. `launch_app` returns both `window_id` and `tty` path
+2. `start_recording` captures the window even when it's in the background
+3. `type_text` writes directly to the TTY - no focus needed
 
 ```
-1. launch_app(bundle_id: "org.alacritty") → get window_id
-2. start_recording(mode: "window", window_id: <id>, max_duration: 30)
-3. [Perform actions in the terminal]
+1. launch_app(bundle_id: "org.alacritty")
+   → {window_id: 123, tty: "/dev/ttys005"}
+
+2. start_recording(window_id: 123)
+   → recording starts (works even if window is hidden)
+
+3. type_text(text: "echo hello\n", tty: "/dev/ttys005")
+   → text appears in terminal (no focus required)
+
 4. stop_recording()
-5. extract_frame(recording_path, timestamp: -1) → verify final state
+   → .screen-recordings/recording_<timestamp>.mov
+
+5. extract_frame(recording_path, timestamp: -1)
+   → .screen-recordings/frames/frame_<id>.png
 ```
 
-## Output Location
-
-Recordings and frames are saved to `.screen-recordings/` in the current working directory:
+## Output
 
 ```
 .screen-recordings/
-├── recording_2026-01-09_03-51-32Z.mov
+├── recording_2026-01-09_04-12-34Z.mov
 └── frames/
-    └── frame_ABC123.png
+    └── frame_77FC955B.png
 ```
-
-## Recording Modes
-
-| Mode | Description |
-|------|-------------|
-| `screen` | Record entire display |
-| `window` | Record specific window (requires `window_id`) |
-| `app` | Record all windows of an app (requires `app_bundle_id`) |
-
-## Permissions
-
-Grant Screen Recording permission in:
-**System Settings > Privacy & Security > Screen Recording**
-
-## Architecture
-
-Built with Swift using:
-- **ScreenCaptureKit** - Modern macOS screen capture API
-- **AVFoundation** - Video encoding and processing
-- **MCP Protocol** - JSON-RPC over stdio
 
 ## License
 

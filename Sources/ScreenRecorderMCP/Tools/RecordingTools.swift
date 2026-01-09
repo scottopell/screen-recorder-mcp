@@ -5,30 +5,17 @@ import Foundation
 struct StartRecordingTool: MCPTool {
     let definition = MCPToolDefinition(
         name: "start_recording",
-        description: "Start recording the screen, a specific window, or application",
+        description: "Start recording a specific window",
         inputSchema: .object([
             "type": "object",
             "properties": .object([
-                "mode": .object([
-                    "type": "string",
-                    "enum": .array(["screen", "window", "app", "region"]),
-                    "description": "What to record: screen (full display), window (specific window), app (all windows of an app), or region"
-                ]),
-                "display_id": .object([
-                    "type": "integer",
-                    "description": "Display ID for screen mode (from list_displays)"
-                ]),
                 "window_id": .object([
                     "type": "integer",
-                    "description": "Window ID for window mode (from list_windows)"
-                ]),
-                "app_bundle_id": .object([
-                    "type": "string",
-                    "description": "Application bundle ID for app mode (from list_apps)"
+                    "description": "Window ID to record (from list_windows or launch_app)"
                 ]),
                 "output_path": .object([
                     "type": "string",
-                    "description": "Output directory path (default: ~/Movies/ScreenRecordings/)"
+                    "description": "Output directory path (default: .screen-recordings/)"
                 ]),
                 "filename": .object([
                     "type": "string",
@@ -73,22 +60,17 @@ struct StartRecordingTool: MCPTool {
                     "description": "Human-readable name for this recording session"
                 ])
             ]),
-            "required": .array(["mode"])
+            "required": .array(["window_id"])
         ])
     )
 
     func execute(arguments: JSONValue) async throws -> MCPToolResult {
-        // Parse mode
-        guard let modeString = arguments["mode"]?.stringValue,
-              let mode = RecordingMode(rawValue: modeString) else {
-            return .error("Invalid or missing 'mode' parameter. Must be one of: screen, window, app, region")
+        // Require window_id
+        guard let windowID = arguments["window_id"]?.intValue else {
+            return .error("Missing required 'window_id' parameter. Use list_windows or launch_app to get a window ID.")
         }
 
         // Parse optional parameters
-        let displayID = arguments["display_id"]?.intValue.map { UInt32($0) }
-        let windowID = arguments["window_id"]?.intValue.map { UInt32($0) }
-        let appBundleID = arguments["app_bundle_id"]?.stringValue
-
         let outputPath = arguments["output_path"]?.stringValue.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
         let filename = arguments["filename"]?.stringValue
 
@@ -101,27 +83,9 @@ struct StartRecordingTool: MCPTool {
         let maxDuration = arguments["max_duration"]?.intValue.map { TimeInterval($0) }
         let sessionName = arguments["session_name"]?.stringValue
 
-        // Validate mode-specific requirements
-        switch mode {
-        case .window:
-            guard windowID != nil else {
-                return .error("Window mode requires 'window_id' parameter. Use list_windows to find available windows.")
-            }
-        case .app:
-            guard appBundleID != nil else {
-                return .error("App mode requires 'app_bundle_id' parameter. Use list_apps to find available applications.")
-            }
-        case .screen, .region:
-            break  // Display ID is optional, will use primary display
-        }
-
-        // Create configuration
+        // Create configuration (window mode only)
         let config = RecordingConfig(
-            mode: mode,
-            displayID: displayID,
-            windowID: windowID,
-            appBundleID: appBundleID,
-            region: nil,  // Region parsing would go here
+            windowID: UInt32(windowID),
             outputDirectory: outputPath,
             filename: filename,
             format: format,
@@ -129,8 +93,6 @@ struct StartRecordingTool: MCPTool {
             quality: quality,
             fps: fps,
             captureCursor: captureCursor,
-            captureClicks: false,
-            audio: .none,  // Audio config would go here
             maxDuration: maxDuration,
             sessionName: sessionName
         )
@@ -144,7 +106,7 @@ struct StartRecordingTool: MCPTool {
                 "status": .string("recording"),
                 "output_path": .string(session.outputPath.path),
                 "started_at": .string(ISO8601DateFormatter().string(from: session.startedAt)),
-                "mode": .string(mode.rawValue),
+                "window_id": .int(windowID),
                 "message": .string("Recording started successfully")
             ]))
         } catch {
@@ -196,153 +158,6 @@ struct StopRecordingTool: MCPTool {
             ]))
         } catch {
             return .error("Failed to stop recording: \(error.localizedDescription)")
-        }
-    }
-}
-
-// MARK: - Pause Recording Tool
-
-struct PauseRecordingTool: MCPTool {
-    let definition = MCPToolDefinition(
-        name: "pause_recording",
-        description: "Pause an active recording (can be resumed)",
-        inputSchema: .object([
-            "type": "object",
-            "properties": .object([
-                "session_id": .object([
-                    "type": "string",
-                    "description": "Session ID (optional if only one active)"
-                ])
-            ]),
-            "required": .array([])
-        ])
-    )
-
-    func execute(arguments: JSONValue) async throws -> MCPToolResult {
-        let sessionId = arguments["session_id"]?.stringValue
-
-        do {
-            let session = try await ScreenRecorder.shared.pauseRecording(sessionId: sessionId)
-
-            return .json(.object([
-                "session_id": .string(session.id),
-                "status": .string("paused"),
-                "duration": .double(session.duration),
-                "message": .string("Recording paused")
-            ]))
-        } catch {
-            return .error("Failed to pause recording: \(error.localizedDescription)")
-        }
-    }
-}
-
-// MARK: - Resume Recording Tool
-
-struct ResumeRecordingTool: MCPTool {
-    let definition = MCPToolDefinition(
-        name: "resume_recording",
-        description: "Resume a paused recording",
-        inputSchema: .object([
-            "type": "object",
-            "properties": .object([
-                "session_id": .object([
-                    "type": "string",
-                    "description": "Session ID (optional if only one active)"
-                ])
-            ]),
-            "required": .array([])
-        ])
-    )
-
-    func execute(arguments: JSONValue) async throws -> MCPToolResult {
-        let sessionId = arguments["session_id"]?.stringValue
-
-        do {
-            let session = try await ScreenRecorder.shared.resumeRecording(sessionId: sessionId)
-
-            return .json(.object([
-                "session_id": .string(session.id),
-                "status": .string("recording"),
-                "duration": .double(session.duration),
-                "message": .string("Recording resumed")
-            ]))
-        } catch {
-            return .error("Failed to resume recording: \(error.localizedDescription)")
-        }
-    }
-}
-
-// MARK: - Cancel Recording Tool
-
-struct CancelRecordingTool: MCPTool {
-    let definition = MCPToolDefinition(
-        name: "cancel_recording",
-        description: "Cancel recording and delete partial output",
-        inputSchema: .object([
-            "type": "object",
-            "properties": .object([
-                "session_id": .object([
-                    "type": "string",
-                    "description": "Session ID (optional if only one active)"
-                ])
-            ]),
-            "required": .array([])
-        ])
-    )
-
-    func execute(arguments: JSONValue) async throws -> MCPToolResult {
-        let sessionId = arguments["session_id"]?.stringValue
-
-        do {
-            try await ScreenRecorder.shared.cancelRecording(sessionId: sessionId)
-
-            return .json(.object([
-                "status": .string("cancelled"),
-                "message": .string("Recording cancelled and partial file deleted")
-            ]))
-        } catch {
-            return .error("Failed to cancel recording: \(error.localizedDescription)")
-        }
-    }
-}
-
-// MARK: - Get Recording Status Tool
-
-struct GetRecordingStatusTool: MCPTool {
-    let definition = MCPToolDefinition(
-        name: "get_recording_status",
-        description: "Get status of active recording session(s)",
-        inputSchema: .object([
-            "type": "object",
-            "properties": .object([
-                "session_id": .object([
-                    "type": "string",
-                    "description": "Specific session (optional, returns all if omitted)"
-                ])
-            ]),
-            "required": .array([])
-        ])
-    )
-
-    func execute(arguments: JSONValue) async throws -> MCPToolResult {
-        let sessionId = arguments["session_id"]?.stringValue
-
-        if let id = sessionId {
-            // Return specific session
-            if let session = await SessionManager.shared.getSession(id) {
-                return .json(.object([
-                    "sessions": .array([session.toJSON()])
-                ]))
-            } else {
-                return .error("Session not found: \(id)")
-            }
-        } else {
-            // Return all active sessions
-            let sessions = await SessionManager.shared.getAllActiveSessions()
-            return .json(.object([
-                "sessions": .array(sessions.map { $0.toJSON() }),
-                "count": .int(sessions.count)
-            ]))
         }
     }
 }

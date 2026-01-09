@@ -2,47 +2,6 @@ import Foundation
 import ScreenCaptureKit
 import AppKit
 
-// MARK: - List Displays Tool
-
-struct ListDisplaysTool: MCPTool {
-    let definition = MCPToolDefinition(
-        name: "list_displays",
-        description: "List all available displays/monitors for recording",
-        inputSchema: .object([
-            "type": "object",
-            "properties": .object([:]),
-            "required": .array([])
-        ])
-    )
-
-    func execute(arguments: JSONValue) async throws -> MCPToolResult {
-        do {
-            let content = try await SCShareableContent.current
-
-            let displays: [JSONValue] = content.displays.map { display in
-                .object([
-                    "id": .int(Int(display.displayID)),
-                    "width": .int(display.width),
-                    "height": .int(display.height),
-                    "frame": .object([
-                        "x": .int(Int(display.frame.origin.x)),
-                        "y": .int(Int(display.frame.origin.y)),
-                        "width": .int(Int(display.frame.size.width)),
-                        "height": .int(Int(display.frame.size.height))
-                    ])
-                ])
-            }
-
-            return .json(.object([
-                "displays": .array(displays),
-                "count": .int(displays.count)
-            ]))
-        } catch {
-            return .error("Failed to enumerate displays: \(error.localizedDescription). Make sure screen recording permission is granted.")
-        }
-    }
-}
-
 // MARK: - List Windows Tool
 
 struct ListWindowsTool: MCPTool {
@@ -89,7 +48,6 @@ struct ListWindowsTool: MCPTool {
                     continue
                 }
 
-                // Skip windows without titles (usually utility windows)
                 let title = window.title ?? ""
 
                 let windowInfo: [String: JSONValue] = [
@@ -127,55 +85,7 @@ struct ListWindowsTool: MCPTool {
     }
 }
 
-// MARK: - List Apps Tool
-
-struct ListAppsTool: MCPTool {
-    let definition = MCPToolDefinition(
-        name: "list_apps",
-        description: "List running applications that can be recorded",
-        inputSchema: .object([
-            "type": "object",
-            "properties": .object([:]),
-            "required": .array([])
-        ])
-    )
-
-    func execute(arguments: JSONValue) async throws -> MCPToolResult {
-        do {
-            let content = try await SCShareableContent.current
-
-            // Group windows by application
-            var appWindows: [String: Int] = [:]
-            for window in content.windows where window.isOnScreen {
-                let bundleId = window.owningApplication?.bundleIdentifier ?? "unknown"
-                appWindows[bundleId, default: 0] += 1
-            }
-
-            let apps: [JSONValue] = content.applications.compactMap { app in
-                let windowCount = appWindows[app.bundleIdentifier] ?? 0
-
-                // Only include apps with visible windows
-                guard windowCount > 0 else { return nil }
-
-                return .object([
-                    "name": .string(app.applicationName),
-                    "bundle_id": .string(app.bundleIdentifier),
-                    "pid": .int(Int(app.processID)),
-                    "window_count": .int(windowCount)
-                ])
-            }
-
-            return .json(.object([
-                "apps": .array(apps),
-                "count": .int(apps.count)
-            ]))
-        } catch {
-            return .error("Failed to enumerate applications: \(error.localizedDescription). Make sure screen recording permission is granted.")
-        }
-    }
-}
-
-// MARK: - Launch App Tool
+// MARK: - Launch Terminal Tool
 
 struct LaunchAppTool: MCPTool {
     let definition = MCPToolDefinition(
@@ -236,9 +146,12 @@ struct LaunchAppTool: MCPTool {
             existingWindowIds = []
         }
 
+        // Get existing TTYs before launch
+        let existingTTYs = getTTYList()
+
         // Launch the app
         let workspace = NSWorkspace.shared
-        var launchedApp: NSRunningApplication?
+        var launchedPID: pid_t?
 
         if let bundleId = bundleId {
             // Launch by bundle ID
@@ -248,7 +161,8 @@ struct LaunchAppTool: MCPTool {
                 config.activates = true
 
                 do {
-                    launchedApp = try await workspace.openApplication(at: appURL, configuration: config)
+                    let app = try await workspace.openApplication(at: appURL, configuration: config)
+                    launchedPID = app.processIdentifier
                 } catch {
                     return .error("Failed to launch app with bundle ID '\(bundleId)': \(error.localizedDescription)")
                 }
@@ -276,7 +190,8 @@ struct LaunchAppTool: MCPTool {
         // Wait for new window to appear
         if waitForWindow {
             let startTime = Date()
-            var newWindow: JSONValue?
+            var newWindowPID: pid_t?
+            var windowInfo: [String: JSONValue]?
 
             while Date().timeIntervalSince(startTime) < timeout {
                 do {
@@ -299,7 +214,8 @@ struct LaunchAppTool: MCPTool {
                             }
 
                             if matches {
-                                newWindow = .object([
+                                newWindowPID = window.owningApplication?.processID
+                                windowInfo = [
                                     "window_id": .int(Int(window.windowID)),
                                     "title": .string(window.title ?? ""),
                                     "app_name": .string(windowAppName),
@@ -311,13 +227,13 @@ struct LaunchAppTool: MCPTool {
                                         "width": .int(Int(window.frame.size.width)),
                                         "height": .int(Int(window.frame.size.height))
                                     ])
-                                ])
+                                ]
                                 break
                             }
                         }
                     }
 
-                    if newWindow != nil {
+                    if windowInfo != nil {
                         break
                     }
                 } catch {
@@ -327,10 +243,18 @@ struct LaunchAppTool: MCPTool {
                 try await Task.sleep(nanoseconds: 100_000_000) // 100ms
             }
 
-            if let window = newWindow {
+            if var info = windowInfo, let pid = newWindowPID ?? launchedPID {
+                // Try to find the TTY for this terminal
+                // Wait a moment for the shell to spawn
+                try await Task.sleep(nanoseconds: 500_000_000) // 500ms
+
+                if let tty = findTTYForTerminal(pid: pid, existingTTYs: existingTTYs) {
+                    info["tty"] = .string(tty)
+                }
+
                 return .json(.object([
                     "status": .string("launched"),
-                    "window": window
+                    "window": .object(info)
                 ]))
             } else {
                 return .json(.object([
@@ -346,172 +270,182 @@ struct LaunchAppTool: MCPTool {
             ]))
         }
     }
-}
 
-// MARK: - Focus Window Tool
+    // Get list of current TTYs
+    private func getTTYList() -> Set<String> {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ls")
+        process.arguments = ["/dev"]
 
-struct FocusWindowTool: MCPTool {
-    let definition = MCPToolDefinition(
-        name: "focus_window",
-        description: "Bring a window to the front and activate its application",
-        inputSchema: .object([
-            "type": "object",
-            "properties": .object([
-                "window_id": .object([
-                    "type": "integer",
-                    "description": "Window ID to focus (from list_windows or launch_app)"
-                ]),
-                "bundle_id": .object([
-                    "type": "string",
-                    "description": "Bundle ID of app to activate (focuses most recent window)"
-                ])
-            ]),
-            "required": .array([])
-        ])
-    )
+        let pipe = Pipe()
+        process.standardOutput = pipe
 
-    func execute(arguments: JSONValue) async throws -> MCPToolResult {
-        let windowId = arguments["window_id"]?.intValue
-        let bundleId = arguments["bundle_id"]?.stringValue
+        do {
+            try process.run()
+            process.waitUntilExit()
 
-        guard windowId != nil || bundleId != nil else {
-            return .error("Must provide either 'window_id' or 'bundle_id'")
-        }
-
-        if let bundleId = bundleId {
-            // Activate app by bundle ID
-            let apps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
-            if let app = apps.first {
-                app.activate(options: [.activateIgnoringOtherApps])
-                return .json(.object([
-                    "status": .string("focused"),
-                    "app_name": .string(app.localizedName ?? ""),
-                    "bundle_id": .string(bundleId)
-                ]))
-            } else {
-                return .error("No running application found with bundle ID '\(bundleId)'")
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                let ttys = output.components(separatedBy: .newlines)
+                    .filter { $0.hasPrefix("ttys") }
+                    .map { "/dev/\($0)" }
+                return Set(ttys)
             }
+        } catch {
+            // Ignore errors
+        }
+        return []
+    }
+
+    // Find TTY for a terminal process
+    private func findTTYForTerminal(pid: pid_t, existingTTYs: Set<String>) -> String? {
+        // Method 1: Look for new TTYs that appeared after launch
+        let currentTTYs = getTTYList()
+        let newTTYs = currentTTYs.subtracting(existingTTYs)
+        if let newTTY = newTTYs.first {
+            return newTTY
         }
 
-        if let windowId = windowId {
-            // Find the window and activate its app
-            do {
-                let content = try await SCShareableContent.current
-                if let window = content.windows.first(where: { $0.windowID == UInt32(windowId) }),
-                   let bundleId = window.owningApplication?.bundleIdentifier {
-                    let apps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
-                    if let app = apps.first {
-                        app.activate(options: [.activateIgnoringOtherApps])
-                        return .json(.object([
-                            "status": .string("focused"),
-                            "window_id": .int(windowId),
-                            "app_name": .string(window.owningApplication?.applicationName ?? ""),
-                            "bundle_id": .string(bundleId)
-                        ]))
+        // Method 2: Find child shell process and get its TTY
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-o", "pid,ppid,tty,comm", "-ax"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                // Find shell processes that are children of the terminal
+                for line in output.components(separatedBy: .newlines) {
+                    let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+                    if parts.count >= 4 {
+                        let ppid = Int(parts[1]) ?? 0
+                        let tty = String(parts[2])
+                        let comm = String(parts[3])
+
+                        // Check if this is a shell process with our terminal as parent
+                        if ppid == Int(pid) && (comm.contains("sh") || comm.contains("zsh") || comm.contains("bash") || comm.contains("fish")) {
+                            if tty != "??" && !tty.isEmpty {
+                                return "/dev/\(tty)"
+                            }
+                        }
                     }
                 }
-                return .error("Window not found or cannot be focused")
-            } catch {
-                return .error("Failed to find window: \(error.localizedDescription)")
             }
+        } catch {
+            // Ignore errors
         }
 
-        return .error("No valid target specified")
+        return nil
     }
 }
 
-// MARK: - Await Window Tool
+// MARK: - Type Text Tool
 
-struct AwaitWindowTool: MCPTool {
+struct TypeTextTool: MCPTool {
     let definition = MCPToolDefinition(
-        name: "await_window",
-        description: "Wait for a window matching criteria to appear. Useful after launching an app.",
+        name: "type_text",
+        description: "Type text into the currently focused application using simulated keystrokes. Useful for sending commands to a terminal.",
         inputSchema: .object([
             "type": "object",
             "properties": .object([
-                "bundle_id": .object([
+                "text": .object([
                     "type": "string",
-                    "description": "Wait for window from app with this bundle ID"
+                    "description": "The text to type. Use \\n for Enter/Return key."
+                ]),
+                "tty": .object([
+                    "type": "string",
+                    "description": "TTY device path (e.g., /dev/ttys005). Required - get this from launch_app."
                 ]),
                 "app_name": .object([
                     "type": "string",
-                    "description": "Wait for window from app with this name"
-                ]),
-                "title_contains": .object([
-                    "type": "string",
-                    "description": "Wait for window with title containing this string"
-                ]),
-                "timeout": .object([
-                    "type": "number",
-                    "default": 10.0,
-                    "description": "Timeout in seconds"
+                    "description": "Application name (e.g., 'Alacritty'). Required - get this from launch_app."
                 ])
             ]),
-            "required": .array([])
+            "required": .array(["text", "tty", "app_name"])
         ])
     )
 
     func execute(arguments: JSONValue) async throws -> MCPToolResult {
-        let bundleId = arguments["bundle_id"]?.stringValue
-        let appName = arguments["app_name"]?.stringValue
-        let titleContains = arguments["title_contains"]?.stringValue
-        let timeout = arguments["timeout"]?.doubleValue ?? 10.0
-
-        guard bundleId != nil || appName != nil || titleContains != nil else {
-            return .error("Must provide at least one of: 'bundle_id', 'app_name', 'title_contains'")
+        guard let text = arguments["text"]?.stringValue else {
+            return .error("Missing required parameter: text")
+        }
+        guard let ttyPath = arguments["tty"]?.stringValue else {
+            return .error("Missing required parameter: tty")
+        }
+        guard let appName = arguments["app_name"]?.stringValue else {
+            return .error("Missing required parameter: app_name")
         }
 
-        let startTime = Date()
+        // Check TTY exists
+        guard FileManager.default.fileExists(atPath: ttyPath) else {
+            return .error("TTY not found: \(ttyPath)")
+        }
 
-        while Date().timeIntervalSince(startTime) < timeout {
-            do {
-                let content = try await SCShareableContent.current
+        // Convert literal \n to actual newlines for processing
+        let processedText = text.replacingOccurrences(of: "\\n", with: "\n")
 
-                for window in content.windows where window.isOnScreen {
-                    var matches = true
+        // Build AppleScript to send keystrokes
+        // Split by newlines and send each part with Return between
+        let lines = processedText.components(separatedBy: "\n")
+        var keystrokeCommands: [String] = []
 
-                    if let targetBundleId = bundleId {
-                        matches = matches && (window.owningApplication?.bundleIdentifier == targetBundleId)
-                    }
-
-                    if let targetAppName = appName {
-                        let windowAppName = window.owningApplication?.applicationName ?? ""
-                        matches = matches && windowAppName.localizedCaseInsensitiveContains(targetAppName)
-                    }
-
-                    if let targetTitle = titleContains {
-                        let windowTitle = window.title ?? ""
-                        matches = matches && windowTitle.localizedCaseInsensitiveContains(targetTitle)
-                    }
-
-                    if matches {
-                        return .json(.object([
-                            "status": .string("found"),
-                            "window": .object([
-                                "window_id": .int(Int(window.windowID)),
-                                "title": .string(window.title ?? ""),
-                                "app_name": .string(window.owningApplication?.applicationName ?? ""),
-                                "bundle_id": .string(window.owningApplication?.bundleIdentifier ?? ""),
-                                "frame": .object([
-                                    "x": .int(Int(window.frame.origin.x)),
-                                    "y": .int(Int(window.frame.origin.y)),
-                                    "width": .int(Int(window.frame.size.width)),
-                                    "height": .int(Int(window.frame.size.height))
-                                ])
-                            ])
-                        ]))
-                    }
-                }
-            } catch {
-                // Continue waiting
+        for (index, line) in lines.enumerated() {
+            if !line.isEmpty {
+                // Escape special characters for AppleScript
+                let escaped = line.replacingOccurrences(of: "\\", with: "\\\\")
+                                  .replacingOccurrences(of: "\"", with: "\\\"")
+                keystrokeCommands.append("keystroke \"\(escaped)\"")
             }
+            // Add Return key after each line except the last empty one
+            if index < lines.count - 1 {
+                keystrokeCommands.append("keystroke return")
+            }
+        }
 
-            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        let script = """
+        tell application "\(appName)" to activate
+        delay 0.1
+        tell application "System Events"
+            tell process "\(appName)"
+                \(keystrokeCommands.joined(separator: "\n                "))
+            end tell
+        end tell
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+
+        let pipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return .error("Failed to run AppleScript: \(error.localizedDescription)")
+        }
+
+        if process.terminationStatus != 0 {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorStr = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            return .error("AppleScript failed: \(errorStr)")
         }
 
         return .json(.object([
-            "status": .string("timeout"),
-            "message": .string("No matching window found within \(timeout) seconds")
+            "status": .string("sent"),
+            "tty": .string(ttyPath),
+            "characters": .int(text.count),
+            "message": .string("Text sent via keystrokes (window was briefly focused)")
         ]))
     }
+
 }
