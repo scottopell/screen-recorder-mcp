@@ -1,0 +1,23 @@
+# Build artifacts
+.build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Swift Package Manager
+Package.resolved
+
+# IDE
+.idea/
+*.sublime-*
+.vscode/
+
+# Recordings (don't commit test recordings)
+.screen-recordings/
+*.mov
+*.mp4
