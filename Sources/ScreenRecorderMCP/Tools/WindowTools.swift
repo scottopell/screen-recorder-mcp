@@ -135,9 +135,10 @@ struct LaunchTerminalTool: MCPTool {
         // -L mcp: Use dedicated socket to isolate from user's tmux server
         // -f /dev/null: Empty tmux config (no user tmux.conf)
         // /bin/zsh --no-rcs: Vanilla zsh without user's .zshrc
+        // -o nobanghist: Disable ! history expansion (prevents dquote issues when sending !" sequences)
         let tmuxCreate = Process()
         tmuxCreate.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        tmuxCreate.arguments = ["tmux", "-L", socketName, "-f", "/dev/null", "new-session", "-d", "-s", sessionName, "/bin/zsh", "--no-rcs"]
+        tmuxCreate.arguments = ["tmux", "-L", socketName, "-f", "/dev/null", "new-session", "-d", "-s", sessionName, "/bin/zsh", "--no-rcs", "-o", "nobanghist"]
 
         do {
             try tmuxCreate.run()
