@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "screen-recorder": {
-      "command": "/Users/scottopell/dev/claude/jan-2026-screen-recording-mcp/.build/debug/screen-recorder-mcp"
+      "command": "/Users/scott.opell/dev/screen-recorder-mcp/.build/debug/screen-recorder-mcp"
     }
   }
 }
