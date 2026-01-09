@@ -57,8 +57,7 @@ actor ScreenRecorder {
             outputDirectory: session.outputPath,
             sessionId: session.id,
             windowId: Int(config.windowID),
-            windowTitle: window.title ?? "Unknown",
-            scaleFactor: scaleFactor
+            windowTitle: window.title ?? "Unknown"
         )
 
         // Create the stream
