@@ -38,17 +38,14 @@ enum OutputFormat: String, Codable, Sendable {
 // MARK: - Quality Preset
 
 enum QualityPreset: String, Codable, Sendable {
-    case low
-    case medium
-    case high
-    case lossless
+    case dev   // Small files for iteration (default)
+    case prod  // Higher bitrate for final recordings
 
-    var bitrateFactor: Double {
+    /// Bits per pixel for bitrate calculation
+    var bitsPerPixel: Double {
         switch self {
-        case .low: return 0.3
-        case .medium: return 0.6
-        case .high: return 1.0
-        case .lossless: return 2.0
+        case .dev: return 0.1   // Original HEAD value
+        case .prod: return 10.0 // 100x higher bitrate
         }
     }
 }
@@ -75,7 +72,7 @@ struct RecordingConfig: Sendable {
         filename: String? = nil,
         format: OutputFormat = .mov,
         codec: VideoCodec = .h264,
-        quality: QualityPreset = .high,
+        quality: QualityPreset = .dev,
         fps: Int = 30,
         captureCursor: Bool = true,
         maxDuration: TimeInterval? = nil,

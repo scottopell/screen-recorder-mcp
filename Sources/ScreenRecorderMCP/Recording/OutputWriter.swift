@@ -5,7 +5,10 @@ import VideoToolbox
 
 // MARK: - Output Writer
 
-actor OutputWriter {
+/// Video writer that processes frames synchronously on a serial queue.
+/// This follows Apple's best practices for real-time capture - frames must be
+/// processed synchronously in the SCStreamOutput callback to avoid drops.
+final class OutputWriter: @unchecked Sendable {
     private let assetWriter: AVAssetWriter
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
@@ -17,6 +20,9 @@ actor OutputWriter {
 
     private let session: RecordingSession
     private let config: RecordingConfig
+
+    /// Serial queue for all write operations - ensures thread safety
+    private let writeQueue = DispatchQueue(label: "com.mcp.outputwriter", qos: .userInitiated)
 
     init(session: RecordingSession, config: RecordingConfig) throws {
         self.session = session
@@ -30,48 +36,42 @@ actor OutputWriter {
 
     // MARK: - Video Handling
 
-    func appendVideoSample(_ sampleBuffer: CMSampleBuffer) {
-        guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
+    /// Append a video frame synchronously. Call this from the SCStreamOutput callback.
+    /// This method is thread-safe and processes the frame immediately.
+    func appendVideoFrame(_ imageBuffer: CVPixelBuffer, presentationTime: CMTime) {
+        writeQueue.sync {
+            // Setup video input on first frame
+            if videoInput == nil {
+                setupVideoInput(from: imageBuffer)
+            }
 
-        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            guard let videoInput = videoInput,
+                  let pixelBufferAdaptor = pixelBufferAdaptor else { return }
 
-        // Setup video input on first frame
-        if videoInput == nil {
-            setupVideoInput(from: sampleBuffer)
-        }
+            // Start writing session
+            if !isStarted {
+                assetWriter.startWriting()
+                assetWriter.startSession(atSourceTime: presentationTime)
+                sessionStartTime = presentationTime
+                isStarted = true
+            }
 
-        guard let videoInput = videoInput,
-              let pixelBufferAdaptor = pixelBufferAdaptor else { return }
-
-        // Start writing session
-        if !isStarted {
-            assetWriter.startWriting()
-            assetWriter.startSession(atSourceTime: presentationTime)
-            sessionStartTime = presentationTime
-            isStarted = true
-        }
-
-        // Get pixel buffer from sample buffer
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-
-        // Append if input is ready
-        if videoInput.isReadyForMoreMediaData {
-            let success = pixelBufferAdaptor.append(imageBuffer, withPresentationTime: presentationTime)
-            if success {
-                lastVideoTime = presentationTime
+            // Append frame - always try, let AVAssetWriter handle backpressure
+            if videoInput.isReadyForMoreMediaData {
+                let success = pixelBufferAdaptor.append(imageBuffer, withPresentationTime: presentationTime)
+                if success {
+                    lastVideoTime = presentationTime
+                }
             }
         }
     }
 
-    private func setupVideoInput(from sampleBuffer: CMSampleBuffer) {
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-
+    private func setupVideoInput(from imageBuffer: CVPixelBuffer) {
         let width = CVPixelBufferGetWidth(imageBuffer)
         let height = CVPixelBufferGetHeight(imageBuffer)
 
-        // Calculate bitrate based on quality and resolution
-        let baseBitrate = Double(width * height) * 0.1  // ~0.1 bits per pixel base
-        let bitrate = baseBitrate * config.quality.bitrateFactor
+        // Calculate bitrate based on quality preset
+        let bitrate = Double(width * height) * config.quality.bitsPerPixel
 
         var compressionProperties: [String: Any] = [
             AVVideoAverageBitRateKey: Int(bitrate),
@@ -123,67 +123,79 @@ actor OutputWriter {
     // MARK: - Audio Handling
 
     func appendAudioSample(_ sampleBuffer: CMSampleBuffer) {
-        guard CMSampleBufferDataIsReady(sampleBuffer),
-              isStarted,
-              let audioInput = audioInput,
-              audioInput.isReadyForMoreMediaData else { return }
+        writeQueue.sync {
+            guard CMSampleBufferDataIsReady(sampleBuffer),
+                  isStarted,
+                  let audioInput = audioInput,
+                  audioInput.isReadyForMoreMediaData else { return }
 
-        audioInput.append(sampleBuffer)
+            audioInput.append(sampleBuffer)
+        }
     }
 
     func setupAudioInput() {
-        let audioSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 44100,
-            AVNumberOfChannelsKey: 2,
-            AVEncoderBitRateKey: 128000
-        ]
+        writeQueue.sync {
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 44100,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 128000
+            ]
 
-        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-        input.expectsMediaDataInRealTime = true
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            input.expectsMediaDataInRealTime = true
 
-        if assetWriter.canAdd(input) {
-            assetWriter.add(input)
-            self.audioInput = input
+            if assetWriter.canAdd(input) {
+                assetWriter.add(input)
+                self.audioInput = input
+            }
         }
     }
 
     // MARK: - Finalization
 
     func finalize() async {
-        guard isStarted else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            writeQueue.async {
+                guard self.isStarted else {
+                    continuation.resume()
+                    return
+                }
 
-        videoInput?.markAsFinished()
-        audioInput?.markAsFinished()
+                self.videoInput?.markAsFinished()
+                self.audioInput?.markAsFinished()
 
-        await withCheckedContinuation { continuation in
-            assetWriter.finishWriting {
-                continuation.resume()
+                self.assetWriter.finishWriting {
+                    continuation.resume()
+                }
             }
         }
     }
 
-    func cancel() async {
-        guard isStarted else { return }
-
-        assetWriter.cancelWriting()
+    func cancel() {
+        writeQueue.sync {
+            guard isStarted else { return }
+            assetWriter.cancelWriting()
+        }
     }
 
     // MARK: - Metadata
 
     var outputMetadata: RecordingMetadata? {
-        guard let videoInput = videoInput else { return nil }
+        writeQueue.sync {
+            guard videoInput != nil else { return nil }
 
-        let duration = CMTimeGetSeconds(lastVideoTime) - CMTimeGetSeconds(sessionStartTime ?? .zero)
+            let duration = CMTimeGetSeconds(lastVideoTime) - CMTimeGetSeconds(sessionStartTime ?? .zero)
 
-        return RecordingMetadata(
-            width: 0,  // Would need to store this
-            height: 0,
-            duration: duration,
-            fps: Double(config.fps),
-            codec: config.codec.rawValue,
-            hasAudio: audioInput != nil
-        )
+            return RecordingMetadata(
+                width: 0,  // Would need to store this
+                height: 0,
+                duration: duration,
+                fps: Double(config.fps),
+                codec: config.codec.rawValue,
+                hasAudio: audioInput != nil
+            )
+        }
     }
 }
 

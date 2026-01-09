@@ -130,9 +130,17 @@ private class ActiveRecording: NSObject, SCStreamOutput, @unchecked Sendable {
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         switch type {
         case .screen:
-            Task {
-                await writer.appendVideoSample(sampleBuffer)
+            // Process frame synchronously - OutputWriter handles thread safety internally
+            guard CMSampleBufferDataIsReady(sampleBuffer),
+                  let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                return
             }
+
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+            // Call writer synchronously - it uses a serial queue internally
+            writer.appendVideoFrame(imageBuffer, presentationTime: presentationTime)
+
         case .audio, .microphone:
             // Audio not supported in this simplified version
             break

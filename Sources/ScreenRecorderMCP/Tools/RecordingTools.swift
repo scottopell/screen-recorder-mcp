@@ -35,9 +35,9 @@ struct StartRecordingTool: MCPTool {
                 ]),
                 "quality": .object([
                     "type": "string",
-                    "enum": .array(["low", "medium", "high", "lossless"]),
-                    "default": "high",
-                    "description": "Recording quality preset"
+                    "enum": .array(["dev", "prod"]),
+                    "default": "dev",
+                    "description": "Recording quality preset. 'dev' (default) is good for dev/iteration. 'prod' is for production/final recordings with maximum quality."
                 ]),
                 "fps": .object([
                     "type": "integer",
@@ -76,7 +76,7 @@ struct StartRecordingTool: MCPTool {
 
         let format = arguments["format"]?.stringValue.flatMap { OutputFormat(rawValue: $0) } ?? .mov
         let codec = arguments["codec"]?.stringValue.flatMap { VideoCodec(rawValue: $0) } ?? .h264
-        let quality = arguments["quality"]?.stringValue.flatMap { QualityPreset(rawValue: $0) } ?? .high
+        let quality = arguments["quality"]?.stringValue.flatMap { QualityPreset(rawValue: $0) } ?? .dev
         let fps = arguments["fps"]?.intValue ?? 30
 
         let captureCursor = arguments["capture_cursor"]?.boolValue ?? true
