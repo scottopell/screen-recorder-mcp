@@ -1,65 +1,12 @@
 import Foundation
-import AVFoundation
 
-// MARK: - Video Codec
-
-enum VideoCodec: String, Codable, Sendable {
-    case h264
-    case h265
-    case prores
-
-    var avCodecType: AVVideoCodecType {
-        switch self {
-        case .h264: return .h264
-        case .h265: return .hevc
-        case .prores: return .proRes422
-        }
-    }
-}
-
-// MARK: - Output Format
-
-enum OutputFormat: String, Codable, Sendable {
-    case mov
-    case mp4
-
-    var fileType: AVFileType {
-        switch self {
-        case .mov: return .mov
-        case .mp4: return .mp4
-        }
-    }
-
-    var fileExtension: String {
-        rawValue
-    }
-}
-
-// MARK: - Quality Preset
-
-enum QualityPreset: String, Codable, Sendable {
-    case dev   // Small files for iteration (default)
-    case prod  // Higher bitrate for final recordings
-
-    /// Bits per pixel for bitrate calculation
-    var bitsPerPixel: Double {
-        switch self {
-        case .dev: return 0.1   // Original HEAD value
-        case .prod: return 10.0 // 100x higher bitrate
-        }
-    }
-}
-
-// MARK: - Recording Configuration (Window-only)
+// MARK: - Recording Configuration (Window-only, Sparse Frame Output)
 
 struct RecordingConfig: Sendable {
     let windowID: UInt32
 
     let outputDirectory: URL
-    let filename: String?
-    let format: OutputFormat
-    let codec: VideoCodec
-    let quality: QualityPreset
+    let directoryName: String?
     let fps: Int
 
     let captureCursor: Bool
@@ -69,10 +16,7 @@ struct RecordingConfig: Sendable {
     init(
         windowID: UInt32,
         outputDirectory: URL? = nil,
-        filename: String? = nil,
-        format: OutputFormat = .mov,
-        codec: VideoCodec = .h264,
-        quality: QualityPreset = .dev,
+        directoryName: String? = nil,
         fps: Int = 30,
         captureCursor: Bool = true,
         maxDuration: TimeInterval? = nil,
@@ -80,10 +24,7 @@ struct RecordingConfig: Sendable {
     ) {
         self.windowID = windowID
         self.outputDirectory = outputDirectory ?? RecordingConfig.defaultOutputDirectory
-        self.filename = filename
-        self.format = format
-        self.codec = codec
-        self.quality = quality
+        self.directoryName = directoryName
         self.fps = max(1, min(120, fps))
         self.captureCursor = captureCursor
         self.maxDuration = maxDuration
@@ -96,20 +37,14 @@ struct RecordingConfig: Sendable {
         return cwd.appendingPathComponent(".screen-recordings", isDirectory: true)
     }
 
-    static var defaultFramesDirectory: URL {
-        return defaultOutputDirectory.appendingPathComponent("frames", isDirectory: true)
-    }
-
-    func generateOutputPath() -> URL {
+    /// Generate output directory path for sparse frame recording
+    func generateOutputDirectory() -> URL {
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
             .replacingOccurrences(of: "T", with: "_")
 
-        let baseName = filename ?? "recording_\(timestamp)"
-        let fullFilename = baseName.hasSuffix(".\(format.fileExtension)")
-            ? baseName
-            : "\(baseName).\(format.fileExtension)"
+        let dirName = directoryName ?? "recording_\(timestamp)"
 
-        return outputDirectory.appendingPathComponent(fullFilename)
+        return outputDirectory.appendingPathComponent(dirName, isDirectory: true)
     }
 }

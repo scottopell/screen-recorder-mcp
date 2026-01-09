@@ -15,7 +15,7 @@ enum RecordingStatus: String, Codable, Sendable {
 final class RecordingSession: @unchecked Sendable {
     let id: String
     let config: RecordingConfig
-    let outputPath: URL
+    let outputPath: URL  // Directory path for sparse recording
     let startedAt: Date
 
     private(set) var status: RecordingStatus
@@ -23,15 +23,22 @@ final class RecordingSession: @unchecked Sendable {
     private(set) var completedAt: Date?
     private(set) var totalPausedDuration: TimeInterval = 0
     private(set) var error: String?
+    private(set) var frameCount: Int = 0
 
     private let lock = NSLock()
 
     init(config: RecordingConfig) {
         self.id = UUID().uuidString
         self.config = config
-        self.outputPath = config.generateOutputPath()
+        self.outputPath = config.generateOutputDirectory()
         self.startedAt = Date()
         self.status = .recording
+    }
+
+    func setFrameCount(_ count: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        frameCount = count
     }
 
     var duration: TimeInterval {
@@ -108,7 +115,8 @@ final class RecordingSession: @unchecked Sendable {
             "started_at": .string(ISO8601DateFormatter().string(from: startedAt)),
             "output_path": .string(outputPath.path),
             "duration": .double(duration),
-            "window_id": .int(Int(config.windowID))
+            "window_id": .int(Int(config.windowID)),
+            "frame_count": .int(frameCount)
         ]
 
         if let name = config.sessionName {
@@ -122,6 +130,9 @@ final class RecordingSession: @unchecked Sendable {
         if let err = error {
             dict["error"] = .string(err)
         }
+
+        // Add manifest path for convenience
+        dict["manifest_path"] = .string(outputPath.appendingPathComponent("manifest.json").path)
 
         return .object(dict)
     }

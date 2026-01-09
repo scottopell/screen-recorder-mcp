@@ -5,46 +5,24 @@ import Foundation
 struct StartRecordingTool: MCPTool {
     let definition = MCPToolDefinition(
         name: "start_recording",
-        description: "Start recording a specific window",
+        description: "Start recording a specific window. Outputs sparse PNG frames with JSON manifest. Use render_recording to convert to video.",
         inputSchema: .object([
             "type": "object",
             "properties": .object([
                 "window_id": .object([
                     "type": "integer",
-                    "description": "Window ID to record (from list_windows or launch_app)"
+                    "description": "Window ID to record (from list_windows or launch_terminal)"
                 ]),
                 "output_path": .object([
                     "type": "string",
                     "description": "Output directory path (default: .screen-recordings/)"
-                ]),
-                "filename": .object([
-                    "type": "string",
-                    "description": "Output filename (default: recording_<timestamp>.mov)"
-                ]),
-                "format": .object([
-                    "type": "string",
-                    "enum": .array(["mov", "mp4"]),
-                    "default": "mov",
-                    "description": "Output container format"
-                ]),
-                "codec": .object([
-                    "type": "string",
-                    "enum": .array(["h264", "h265", "prores"]),
-                    "default": "h264",
-                    "description": "Video codec"
-                ]),
-                "quality": .object([
-                    "type": "string",
-                    "enum": .array(["dev", "prod"]),
-                    "default": "dev",
-                    "description": "Recording quality preset. 'dev' (default) is good for dev/iteration. 'prod' is for production/final recordings with maximum quality."
                 ]),
                 "fps": .object([
                     "type": "integer",
                     "default": 30,
                     "minimum": 1,
                     "maximum": 120,
-                    "description": "Frames per second"
+                    "description": "Maximum frames per second (actual rate depends on content changes)"
                 ]),
                 "capture_cursor": .object([
                     "type": "boolean",
@@ -67,30 +45,20 @@ struct StartRecordingTool: MCPTool {
     func execute(arguments: JSONValue) async throws -> MCPToolResult {
         // Require window_id
         guard let windowID = arguments["window_id"]?.intValue else {
-            return .error("Missing required 'window_id' parameter. Use list_windows or launch_app to get a window ID.")
+            return .error("Missing required 'window_id' parameter. Use list_windows or launch_terminal to get a window ID.")
         }
 
         // Parse optional parameters
         let outputPath = arguments["output_path"]?.stringValue.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
-        let filename = arguments["filename"]?.stringValue
-
-        let format = arguments["format"]?.stringValue.flatMap { OutputFormat(rawValue: $0) } ?? .mov
-        let codec = arguments["codec"]?.stringValue.flatMap { VideoCodec(rawValue: $0) } ?? .h264
-        let quality = arguments["quality"]?.stringValue.flatMap { QualityPreset(rawValue: $0) } ?? .dev
         let fps = arguments["fps"]?.intValue ?? 30
-
         let captureCursor = arguments["capture_cursor"]?.boolValue ?? true
         let maxDuration = arguments["max_duration"]?.intValue.map { TimeInterval($0) }
         let sessionName = arguments["session_name"]?.stringValue
 
-        // Create configuration (window mode only)
+        // Create configuration
         let config = RecordingConfig(
             windowID: UInt32(windowID),
             outputDirectory: outputPath,
-            filename: filename,
-            format: format,
-            codec: codec,
-            quality: quality,
             fps: fps,
             captureCursor: captureCursor,
             maxDuration: maxDuration,
@@ -120,7 +88,7 @@ struct StartRecordingTool: MCPTool {
 struct StopRecordingTool: MCPTool {
     let definition = MCPToolDefinition(
         name: "stop_recording",
-        description: "Stop an active recording and finalize the output file",
+        description: "Stop an active recording and finalize the sparse frame archive",
         inputSchema: .object([
             "type": "object",
             "properties": .object([
@@ -139,25 +107,38 @@ struct StopRecordingTool: MCPTool {
         do {
             let session = try await ScreenRecorder.shared.stopRecording(sessionId: sessionId)
 
-            // Get file size
-            let fileSize: Int64
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: session.outputPath.path),
-               let size = attrs[.size] as? Int64 {
-                fileSize = size
-            } else {
-                fileSize = 0
-            }
+            // Calculate total directory size
+            let totalSize = calculateDirectorySize(at: session.outputPath)
 
             return .json(.object([
                 "session_id": .string(session.id),
                 "status": .string("completed"),
                 "output_path": .string(session.outputPath.path),
+                "manifest_path": .string(session.outputPath.appendingPathComponent("manifest.json").path),
                 "duration": .double(session.duration),
-                "file_size": .int(Int(fileSize)),
-                "message": .string("Recording completed successfully")
+                "frame_count": .int(session.frameCount),
+                "total_size": .int(Int(totalSize)),
+                "message": .string("Recording completed successfully. Use render_recording to convert to video.")
             ]))
         } catch {
             return .error("Failed to stop recording: \(error.localizedDescription)")
         }
+    }
+
+    private func calculateDirectorySize(at url: URL) -> Int64 {
+        var totalSize: Int64 = 0
+        let fileManager = FileManager.default
+
+        guard let enumerator = fileManager.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else {
+            return 0
+        }
+
+        for case let fileURL as URL in enumerator {
+            if let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                totalSize += Int64(fileSize)
+            }
+        }
+
+        return totalSize
     }
 }

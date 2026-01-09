@@ -2,8 +2,9 @@ import Foundation
 import ScreenCaptureKit
 import AVFoundation
 import CoreMedia
+import AppKit
 
-// MARK: - Screen Recorder (Window-only)
+// MARK: - Screen Recorder (Window-only, Sparse Frame Output)
 
 actor ScreenRecorder {
     static let shared = ScreenRecorder()
@@ -26,29 +27,41 @@ actor ScreenRecorder {
         // Create content filter for window
         let filter = SCContentFilter(desktopIndependentWindow: window)
 
-        // Create stream configuration
+        // Create stream configuration with retina support
         let streamConfig = SCStreamConfiguration()
-        streamConfig.width = Int(window.frame.size.width)
-        streamConfig.height = Int(window.frame.size.height)
+
+        // Get display scale factor for retina support
+        // Find the screen containing this window, or fall back to main screen
+        let scaleFactor = NSScreen.screens.first { screen in
+            screen.frame.intersects(window.frame)
+        }?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+
+        // Set dimensions in pixels (not points) for full retina resolution
+        streamConfig.width = Int(window.frame.size.width * scaleFactor)
+        streamConfig.height = Int(window.frame.size.height * scaleFactor)
         streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(config.fps))
         streamConfig.showsCursor = config.captureCursor
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA
         streamConfig.queueDepth = 5
 
+        // Enable best resolution capture on macOS 14+
+        if #available(macOS 14.0, *) {
+            streamConfig.captureResolution = .best
+        }
+
         // Create recording session
         let session = await SessionManager.shared.createSession(config: config)
 
-        // Ensure output directory exists
-        try FileManager.default.createDirectory(
-            at: config.outputDirectory,
-            withIntermediateDirectories: true
+        // Create sparse frame writer
+        let writer = try SparseFrameWriter(
+            outputDirectory: session.outputPath,
+            sessionId: session.id,
+            windowId: Int(config.windowID),
+            windowTitle: window.title ?? "Unknown"
         )
 
         // Create the stream
         let stream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
-
-        // Create output writer
-        let writer = try OutputWriter(session: session, config: config)
 
         // Create active recording
         let activeRecording = ActiveRecording(
@@ -100,7 +113,11 @@ actor ScreenRecorder {
         try await activeRecording.stream.stopCapture()
 
         // Finalize the writer
-        await activeRecording.writer.finalize()
+        _ = try await activeRecording.writer.finalize()
+
+        // Update session with final frame count
+        let frameCount = await activeRecording.writer.currentFrameCount
+        activeRecording.session.setFrameCount(frameCount)
 
         // Mark session as complete
         activeRecording.session.complete()
@@ -117,10 +134,10 @@ actor ScreenRecorder {
 private class ActiveRecording: NSObject, SCStreamOutput, @unchecked Sendable {
     let session: RecordingSession
     let stream: SCStream
-    let writer: OutputWriter
+    let writer: SparseFrameWriter
     let config: RecordingConfig
 
-    init(session: RecordingSession, stream: SCStream, writer: OutputWriter, config: RecordingConfig) {
+    init(session: RecordingSession, stream: SCStream, writer: SparseFrameWriter, config: RecordingConfig) {
         self.session = session
         self.stream = stream
         self.writer = writer
@@ -130,7 +147,7 @@ private class ActiveRecording: NSObject, SCStreamOutput, @unchecked Sendable {
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         switch type {
         case .screen:
-            // Process frame synchronously - OutputWriter handles thread safety internally
+            // Process frame synchronously
             guard CMSampleBufferDataIsReady(sampleBuffer),
                   let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
                 return
@@ -138,8 +155,10 @@ private class ActiveRecording: NSObject, SCStreamOutput, @unchecked Sendable {
 
             let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
-            // Call writer synchronously - it uses a serial queue internally
-            writer.appendVideoFrame(imageBuffer, presentationTime: presentationTime)
+            // Dispatch to async context to call actor method
+            Task {
+                await writer.appendFrame(imageBuffer, presentationTime: presentationTime)
+            }
 
         case .audio, .microphone:
             // Audio not supported in this simplified version
