@@ -83,7 +83,8 @@ struct RenderRecordingTool: MCPTool {
             format: outputFormat,
             quality: quality,
             fps: fps,
-            recordingDir: recordingDir
+            recordingDir: recordingDir,
+            manifest: manifest
         )
 
         // Execute ffmpeg
@@ -174,7 +175,8 @@ struct RenderRecordingTool: MCPTool {
         format: OutputVideoFormat,
         quality: RenderQuality,
         fps: Int,
-        recordingDir: URL
+        recordingDir: URL,
+        manifest: SparseManifest
     ) -> [String] {
         var args = [
             "-y",  // Overwrite output
@@ -182,6 +184,18 @@ struct RenderRecordingTool: MCPTool {
             "-safe", "0",
             "-i", concatFile.path
         ]
+
+        // Calculate output dimensions (scale down for retina to match visual window size)
+        let scaleFactor = manifest.metadata.scale_factor ?? 1.0
+        let outputWidth = Int(Double(manifest.metadata.width) / scaleFactor)
+        let outputHeight = Int(Double(manifest.metadata.height) / scaleFactor)
+
+        // Build video filter for scaling (use high-quality lanczos scaling)
+        var videoFilters: [String] = []
+        if scaleFactor > 1.0 {
+            // Scale down to logical size, ensure even dimensions for h264
+            videoFilters.append("scale=\(outputWidth - outputWidth % 2):\(outputHeight - outputHeight % 2):flags=lanczos")
+        }
 
         switch format {
         case .mp4:
@@ -191,6 +205,9 @@ struct RenderRecordingTool: MCPTool {
                 "-crf", quality.h264CRF,
                 "-preset", "medium"
             ]
+            if !videoFilters.isEmpty {
+                args += ["-vf", videoFilters.joined(separator: ",")]
+            }
 
         case .webm:
             args += [
@@ -198,16 +215,23 @@ struct RenderRecordingTool: MCPTool {
                 "-crf", quality.vp9CRF,
                 "-b:v", "0"
             ]
+            if !videoFilters.isEmpty {
+                args += ["-vf", videoFilters.joined(separator: ",")]
+            }
 
         case .gif:
             // GIF requires palette generation for quality
             let palettePath = recordingDir.appendingPathComponent("_palette.png").path
+            var gifFilter = "fps=\(min(fps, 15))"
+            if scaleFactor > 1.0 {
+                gifFilter += ",scale=\(outputWidth - outputWidth % 2):\(outputHeight - outputHeight % 2):flags=lanczos"
+            }
             args = [
                 "-y",
                 "-f", "concat",
                 "-safe", "0",
                 "-i", concatFile.path,
-                "-vf", "fps=\(min(fps, 15)),palettegen=stats_mode=diff",
+                "-vf", "\(gifFilter),palettegen=stats_mode=diff",
                 palettePath
             ]
             // Will need two-pass for GIF, handled separately
@@ -318,6 +342,7 @@ struct SparseMetadata: Codable {
     let height: Int
     let total_duration: Double
     let frame_count: Int
+    let scale_factor: Double?  // Display scale factor (2.0 for retina), optional for backwards compatibility
 }
 
 struct SparseFrame: Codable {

@@ -2,6 +2,7 @@ import Foundation
 import ScreenCaptureKit
 import AVFoundation
 import CoreMedia
+import AppKit
 
 // MARK: - Screen Recorder (Window-only, Sparse Frame Output)
 
@@ -26,14 +27,27 @@ actor ScreenRecorder {
         // Create content filter for window
         let filter = SCContentFilter(desktopIndependentWindow: window)
 
-        // Create stream configuration
+        // Create stream configuration with retina support
         let streamConfig = SCStreamConfiguration()
-        streamConfig.width = Int(window.frame.size.width)
-        streamConfig.height = Int(window.frame.size.height)
+
+        // Get display scale factor for retina support
+        // Find the screen containing this window, or fall back to main screen
+        let scaleFactor = NSScreen.screens.first { screen in
+            screen.frame.intersects(window.frame)
+        }?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+
+        // Set dimensions in pixels (not points) for full retina resolution
+        streamConfig.width = Int(window.frame.size.width * scaleFactor)
+        streamConfig.height = Int(window.frame.size.height * scaleFactor)
         streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(config.fps))
         streamConfig.showsCursor = config.captureCursor
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA
         streamConfig.queueDepth = 5
+
+        // Enable best resolution capture on macOS 14+
+        if #available(macOS 14.0, *) {
+            streamConfig.captureResolution = .best
+        }
 
         // Create recording session
         let session = await SessionManager.shared.createSession(config: config)
@@ -43,7 +57,8 @@ actor ScreenRecorder {
             outputDirectory: session.outputPath,
             sessionId: session.id,
             windowId: Int(config.windowID),
-            windowTitle: window.title ?? "Unknown"
+            windowTitle: window.title ?? "Unknown",
+            scaleFactor: scaleFactor
         )
 
         // Create the stream

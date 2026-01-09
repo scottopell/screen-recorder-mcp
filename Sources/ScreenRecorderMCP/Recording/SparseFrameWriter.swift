@@ -30,6 +30,7 @@ actor SparseFrameWriter {
         var height: Int
         var total_duration: Double
         var frame_count: Int
+        let scale_factor: Double  // Display scale factor (2.0 for retina)
     }
 
     struct Manifest: Codable {
@@ -38,7 +39,7 @@ actor SparseFrameWriter {
         let frames: [FrameEntry]
     }
 
-    init(outputDirectory: URL, sessionId: String, windowId: Int, windowTitle: String) throws {
+    init(outputDirectory: URL, sessionId: String, windowId: Int, windowTitle: String, scaleFactor: Double = 1.0) throws {
         self.outputDirectory = outputDirectory
         self.framesDirectory = outputDirectory.appendingPathComponent("frames")
 
@@ -56,7 +57,8 @@ actor SparseFrameWriter {
             width: 0,
             height: 0,
             total_duration: 0,
-            frame_count: 0
+            frame_count: 0,
+            scale_factor: scaleFactor
         )
     }
 
