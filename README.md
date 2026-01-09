@@ -4,29 +4,11 @@ A macOS window recording solution for LLM agents via the Model Context Protocol 
 
 ## Demo: Claude Code Using Screen Recorder
 
-This demo shows Claude Code using the screen-recorder MCP tools to create a recording. The "controller" session asks Claude to record a simple demo, and the "output" is what Claude produced.
+Watch Claude Code use the screen-recorder MCP tools to create a recording. The left side shows Claude receiving a task and calling the tools, while the right side shows the terminal being recorded in real-time.
 
-### Controller (Claude receives the task)
+https://github.com/user-attachments/assets/placeholder-upload-full-demo-mp4
 
-https://github.com/user-attachments/assets/placeholder-upload-demo-controller-mp4
-
-<details>
-<summary>Can't see the video? Click to download</summary>
-
-[Download demo-controller.mp4](assets/demo-controller.mp4) (323 KB)
-</details>
-
-### Output (Recording created by Claude)
-
-https://github.com/user-attachments/assets/placeholder-upload-demo-output-mp4
-
-<details>
-<summary>Can't see the video? Click to download</summary>
-
-[Download demo-output.mp4](assets/demo-output.mp4) (18 KB)
-</details>
-
-*Claude used `launch_terminal`, `run_demo_script`, and `render_recording` to produce this output autonomously.*
+*Claude used `launch_terminal`, `run_demo_script`, and `render_recording` to produce the recording autonomously.*
 
 ## Requirements
 
