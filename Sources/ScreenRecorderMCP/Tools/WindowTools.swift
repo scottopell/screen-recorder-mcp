@@ -350,3 +350,49 @@ struct SendTerminalInputTool: MCPTool {
         ]))
     }
 }
+
+// MARK: - Kill Terminal Tool
+
+struct KillTerminalTool: MCPTool {
+    let definition = MCPToolDefinition(
+        name: "kill_terminal",
+        description: "Kill a terminal session by terminating its tmux session. This cleanly closes the terminal.",
+        inputSchema: .object([
+            "type": "object",
+            "properties": .object([
+                "session_name": .object([
+                    "type": "string",
+                    "description": "tmux session name from launch_terminal"
+                ])
+            ]),
+            "required": .array(["session_name"])
+        ])
+    )
+
+    func execute(arguments: JSONValue) async throws -> MCPToolResult {
+        guard let sessionName = arguments["session_name"]?.stringValue else {
+            return .error("Missing required parameter: session_name")
+        }
+
+        let killSession = Process()
+        killSession.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        killSession.arguments = ["tmux", "-L", "mcp", "kill-session", "-t", sessionName]
+
+        do {
+            try killSession.run()
+            killSession.waitUntilExit()
+
+            if killSession.terminationStatus != 0 {
+                return .error("Failed to kill session '\(sessionName)' - session may not exist")
+            }
+        } catch {
+            return .error("Failed to kill session: \(error.localizedDescription)")
+        }
+
+        return .json(.object([
+            "status": .string("killed"),
+            "session_name": .string(sessionName),
+            "message": .string("Terminal session terminated")
+        ]))
+    }
+}

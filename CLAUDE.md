@@ -31,7 +31,7 @@ After building, restart Claude Code to pick up the new binary. Then use the MCP 
 
 ```
 Sources/ScreenRecorderMCP/
-├── main.swift              # Entry point, registers 7 tools
+├── main.swift              # Entry point, registers 8 tools
 ├── MCPServer.swift         # JSON-RPC server over stdio
 ├── Models/
 │   ├── JSONRPCTypes.swift  # JSON-RPC 2.0 message types
@@ -43,7 +43,7 @@ Sources/ScreenRecorderMCP/
 │   └── OutputWriter.swift      # AVAssetWriter encoding
 ├── Tools/
 │   ├── PermissionTools.swift   # check_permissions
-│   ├── WindowTools.swift       # list_windows, launch_terminal, send_terminal_input
+│   ├── WindowTools.swift       # list_windows, launch_terminal, send_terminal_input, kill_terminal
 │   ├── RecordingTools.swift    # start_recording, stop_recording
 │   └── ProcessingTools.swift   # extract_frame
 └── Utils/
@@ -64,15 +64,16 @@ Sources/ScreenRecorderMCP/
 - Recordings: `.screen-recordings/`
 - Extracted frames: `.screen-recordings/frames/`
 
-## 7 Tools
+## 8 Tools
 
 1. `check_permissions` - Pre-flight permission check
 2. `list_windows` - Debug/fallback window enumeration
 3. `launch_terminal` - Launch terminal in tmux session, return window_id + session_name
 4. `send_terminal_input` - Send text via tmux send-keys (headless, no focus needed)
-5. `start_recording` - Record a window by ID (works in background)
-6. `stop_recording` - Finalize recording
-7. `extract_frame` - Extract frame for verification
+5. `kill_terminal` - Kill a terminal session by terminating its tmux session
+6. `start_recording` - Record a window by ID (works in background)
+7. `stop_recording` - Finalize recording
+8. `extract_frame` - Extract frame for verification
 
 ## Common Issues
 

@@ -14,7 +14,7 @@ guard #available(macOS 12.3, *) else {
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)  // Don't show in dock
 
-// Register all tools (7 focused tools for window recording)
+// Register all tools (8 focused tools for terminal recording)
 let tools: [any MCPTool] = [
     // Permission check
     CheckPermissionsTool(),
@@ -23,6 +23,7 @@ let tools: [any MCPTool] = [
     ListWindowsTool(),
     LaunchTerminalTool(),
     SendTerminalInputTool(),
+    KillTerminalTool(),
 
     // Recording control
     StartRecordingTool(),
