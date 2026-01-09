@@ -85,27 +85,22 @@ struct ListWindowsTool: MCPTool {
     }
 }
 
-// MARK: - Launch Terminal Tool
+// MARK: - Launch Terminal Tool (with tmux for headless input)
 
-struct LaunchAppTool: MCPTool {
+struct LaunchTerminalTool: MCPTool {
     let definition = MCPToolDefinition(
-        name: "launch_app",
-        description: "Launch an application and return its window info once ready. Useful for launching a terminal to record.",
+        name: "launch_terminal",
+        description: "Launch a terminal application in a tmux session for headless recording. Returns window_id for recording and session_name for sending input.",
         inputSchema: .object([
             "type": "object",
             "properties": .object([
                 "bundle_id": .object([
                     "type": "string",
-                    "description": "Application bundle ID (e.g., 'org.alacritty', 'com.apple.Terminal')"
+                    "description": "Terminal bundle ID (e.g., 'org.alacritty', 'com.apple.Terminal')"
                 ]),
                 "app_name": .object([
                     "type": "string",
-                    "description": "Application name (e.g., 'Alacritty', 'Terminal'). Used if bundle_id not provided."
-                ]),
-                "new_instance": .object([
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Launch a new instance/window even if app is already running"
+                    "description": "Terminal name (e.g., 'Alacritty', 'Terminal'). Used if bundle_id not provided."
                 ]),
                 "wait_for_window": .object([
                     "type": "boolean",
@@ -125,12 +120,33 @@ struct LaunchAppTool: MCPTool {
     func execute(arguments: JSONValue) async throws -> MCPToolResult {
         let bundleId = arguments["bundle_id"]?.stringValue
         let appName = arguments["app_name"]?.stringValue
-        let newInstance = arguments["new_instance"]?.boolValue ?? true
         let waitForWindow = arguments["wait_for_window"]?.boolValue ?? true
         let timeout = arguments["timeout"]?.doubleValue ?? 5.0
 
         guard bundleId != nil || appName != nil else {
             return .error("Must provide either 'bundle_id' or 'app_name'")
+        }
+
+        // Generate unique tmux session name and use dedicated socket for isolation
+        let sessionName = "mcp-\(UUID().uuidString.prefix(8).lowercased())"
+        let socketName = "mcp"  // Dedicated socket for MCP sessions
+
+        // Create detached tmux session with vanilla shell (no user config)
+        // -L mcp: Use dedicated socket to isolate from user's tmux server
+        // -f /dev/null: Empty tmux config (no user tmux.conf)
+        // /bin/zsh --no-rcs: Vanilla zsh without user's .zshrc
+        let tmuxCreate = Process()
+        tmuxCreate.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        tmuxCreate.arguments = ["tmux", "-L", socketName, "-f", "/dev/null", "new-session", "-d", "-s", sessionName, "/bin/zsh", "--no-rcs"]
+
+        do {
+            try tmuxCreate.run()
+            tmuxCreate.waitUntilExit()
+            if tmuxCreate.terminationStatus != 0 {
+                return .error("Failed to create tmux session")
+            }
+        } catch {
+            return .error("Failed to create tmux session: \(error.localizedDescription)")
         }
 
         // Get existing windows before launch to detect new ones
@@ -146,87 +162,52 @@ struct LaunchAppTool: MCPTool {
             existingWindowIds = []
         }
 
-        // Get existing TTYs before launch
-        let existingTTYs = getTTYList()
+        // Launch terminal attached to tmux session (using same dedicated socket)
+        let terminalApp = appName ?? "Alacritty"
+        let launchProcess = Process()
+        launchProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        launchProcess.arguments = ["-na", terminalApp, "--args", "-e", "tmux", "-L", socketName, "attach-session", "-t", sessionName]
 
-        // Launch the app
-        let workspace = NSWorkspace.shared
-        var launchedPID: pid_t?
-
-        if let bundleId = bundleId {
-            // Launch by bundle ID
-            if let appURL = workspace.urlForApplication(withBundleIdentifier: bundleId) {
-                let config = NSWorkspace.OpenConfiguration()
-                config.createsNewApplicationInstance = newInstance
-                config.activates = true
-
-                do {
-                    let app = try await workspace.openApplication(at: appURL, configuration: config)
-                    launchedPID = app.processIdentifier
-                } catch {
-                    return .error("Failed to launch app with bundle ID '\(bundleId)': \(error.localizedDescription)")
-                }
-            } else {
-                return .error("No application found with bundle ID '\(bundleId)'")
+        do {
+            try launchProcess.run()
+            launchProcess.waitUntilExit()
+            if launchProcess.terminationStatus != 0 {
+                // Clean up tmux session on failure
+                _ = try? runCommand("/usr/bin/env", arguments: ["tmux", "-L", "mcp", "kill-session", "-t", sessionName])
+                return .error("Failed to launch \(terminalApp)")
             }
-        } else if let appName = appName {
-            // Launch by name using open command
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            process.arguments = newInstance ? ["-na", appName] : ["-a", appName]
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-
-                if process.terminationStatus != 0 {
-                    return .error("Failed to launch app '\(appName)'")
-                }
-            } catch {
-                return .error("Failed to launch app '\(appName)': \(error.localizedDescription)")
-            }
+        } catch {
+            _ = try? runCommand("/usr/bin/env", arguments: ["tmux", "-L", "mcp", "kill-session", "-t", sessionName])
+            return .error("Failed to launch \(terminalApp): \(error.localizedDescription)")
         }
 
         // Wait for new window to appear
         if waitForWindow {
             let startTime = Date()
-            var newWindowPID: pid_t?
             var windowInfo: [String: JSONValue]?
 
             while Date().timeIntervalSince(startTime) < timeout {
                 do {
                     let content = try await SCShareableContent.current
 
-                    // Find new windows that weren't there before
                     for window in content.windows {
                         if !existingWindowIds.contains(window.windowID) && window.isOnScreen {
-                            // Check if it matches our launched app
-                            let windowBundleId = window.owningApplication?.bundleIdentifier ?? ""
                             let windowAppName = window.owningApplication?.applicationName ?? ""
 
-                            let matches: Bool
-                            if let targetBundleId = bundleId {
-                                matches = windowBundleId == targetBundleId
-                            } else if let targetAppName = appName {
-                                matches = windowAppName.localizedCaseInsensitiveContains(targetAppName)
-                            } else {
-                                matches = false
-                            }
-
-                            if matches {
-                                newWindowPID = window.owningApplication?.processID
+                            if windowAppName.localizedCaseInsensitiveContains(terminalApp) {
                                 windowInfo = [
                                     "window_id": .int(Int(window.windowID)),
                                     "title": .string(window.title ?? ""),
                                     "app_name": .string(windowAppName),
-                                    "bundle_id": .string(windowBundleId),
+                                    "bundle_id": .string(window.owningApplication?.bundleIdentifier ?? ""),
                                     "pid": .int(Int(window.owningApplication?.processID ?? 0)),
                                     "frame": .object([
                                         "x": .int(Int(window.frame.origin.x)),
                                         "y": .int(Int(window.frame.origin.y)),
                                         "width": .int(Int(window.frame.size.width)),
                                         "height": .int(Int(window.frame.size.height))
-                                    ])
+                                    ]),
+                                    "session_name": .string(sessionName)
                                 ]
                                 break
                             }
@@ -243,15 +224,7 @@ struct LaunchAppTool: MCPTool {
                 try await Task.sleep(nanoseconds: 100_000_000) // 100ms
             }
 
-            if var info = windowInfo, let pid = newWindowPID ?? launchedPID {
-                // Try to find the TTY for this terminal
-                // Wait a moment for the shell to spawn
-                try await Task.sleep(nanoseconds: 500_000_000) // 500ms
-
-                if let tty = findTTYForTerminal(pid: pid, existingTTYs: existingTTYs) {
-                    info["tty"] = .string(tty)
-                }
-
+            if let info = windowInfo {
                 return .json(.object([
                     "status": .string("launched"),
                     "window": .object(info)
@@ -259,115 +232,51 @@ struct LaunchAppTool: MCPTool {
             } else {
                 return .json(.object([
                     "status": .string("launched"),
-                    "message": .string("App launched but no new window detected within timeout"),
-                    "window": .null
+                    "session_name": .string(sessionName),
+                    "message": .string("App launched but no new window detected within timeout")
                 ]))
             }
         } else {
             return .json(.object([
                 "status": .string("launched"),
+                "session_name": .string(sessionName),
                 "message": .string("App launch initiated")
             ]))
         }
     }
 
-    // Get list of current TTYs
-    private func getTTYList() -> Set<String> {
+    private func runCommand(_ path: String, arguments: [String]) throws -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ls")
-        process.arguments = ["/dev"]
-
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
         let pipe = Pipe()
         process.standardOutput = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                let ttys = output.components(separatedBy: .newlines)
-                    .filter { $0.hasPrefix("ttys") }
-                    .map { "/dev/\($0)" }
-                return Set(ttys)
-            }
-        } catch {
-            // Ignore errors
-        }
-        return []
-    }
-
-    // Find TTY for a terminal process
-    private func findTTYForTerminal(pid: pid_t, existingTTYs: Set<String>) -> String? {
-        // Method 1: Look for new TTYs that appeared after launch
-        let currentTTYs = getTTYList()
-        let newTTYs = currentTTYs.subtracting(existingTTYs)
-        if let newTTY = newTTYs.first {
-            return newTTY
-        }
-
-        // Method 2: Find child shell process and get its TTY
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-o", "pid,ppid,tty,comm", "-ax"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                // Find shell processes that are children of the terminal
-                for line in output.components(separatedBy: .newlines) {
-                    let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-                    if parts.count >= 4 {
-                        let ppid = Int(parts[1]) ?? 0
-                        let tty = String(parts[2])
-                        let comm = String(parts[3])
-
-                        // Check if this is a shell process with our terminal as parent
-                        if ppid == Int(pid) && (comm.contains("sh") || comm.contains("zsh") || comm.contains("bash") || comm.contains("fish")) {
-                            if tty != "??" && !tty.isEmpty {
-                                return "/dev/\(tty)"
-                            }
-                        }
-                    }
-                }
-            }
-        } catch {
-            // Ignore errors
-        }
-
-        return nil
+        try process.run()
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8) ?? ""
     }
 }
 
-// MARK: - Type Text Tool
+// MARK: - Send Terminal Input Tool (headless via tmux)
 
-struct TypeTextTool: MCPTool {
+struct SendTerminalInputTool: MCPTool {
     let definition = MCPToolDefinition(
-        name: "type_text",
-        description: "Type text into the currently focused application using simulated keystrokes. Useful for sending commands to a terminal.",
+        name: "send_terminal_input",
+        description: "Send text input to a terminal session headlessly via tmux. Does not require window focus.",
         inputSchema: .object([
             "type": "object",
             "properties": .object([
                 "text": .object([
                     "type": "string",
-                    "description": "The text to type. Use \\n for Enter/Return key."
+                    "description": "The text to send. Use \\n for Enter/Return key."
                 ]),
-                "tty": .object([
+                "session_name": .object([
                     "type": "string",
-                    "description": "TTY device path (e.g., /dev/ttys005). Required - get this from launch_app."
-                ]),
-                "app_name": .object([
-                    "type": "string",
-                    "description": "Application name (e.g., 'Alacritty'). Required - get this from launch_app."
+                    "description": "tmux session name from launch_terminal."
                 ])
             ]),
-            "required": .array(["text", "tty", "app_name"])
+            "required": .array(["text", "session_name"])
         ])
     )
 
@@ -375,77 +284,69 @@ struct TypeTextTool: MCPTool {
         guard let text = arguments["text"]?.stringValue else {
             return .error("Missing required parameter: text")
         }
-        guard let ttyPath = arguments["tty"]?.stringValue else {
-            return .error("Missing required parameter: tty")
-        }
-        guard let appName = arguments["app_name"]?.stringValue else {
-            return .error("Missing required parameter: app_name")
+        guard let sessionName = arguments["session_name"]?.stringValue else {
+            return .error("Missing required parameter: session_name")
         }
 
-        // Check TTY exists
-        guard FileManager.default.fileExists(atPath: ttyPath) else {
-            return .error("TTY not found: \(ttyPath)")
-        }
-
-        // Convert literal \n to actual newlines for processing
-        let processedText = text.replacingOccurrences(of: "\\n", with: "\n")
-
-        // Build AppleScript to send keystrokes
-        // Split by newlines and send each part with Return between
-        let lines = processedText.components(separatedBy: "\n")
-        var keystrokeCommands: [String] = []
-
-        for (index, line) in lines.enumerated() {
-            if !line.isEmpty {
-                // Escape special characters for AppleScript
-                let escaped = line.replacingOccurrences(of: "\\", with: "\\\\")
-                                  .replacingOccurrences(of: "\"", with: "\\\"")
-                keystrokeCommands.append("keystroke \"\(escaped)\"")
-            }
-            // Add Return key after each line except the last empty one
-            if index < lines.count - 1 {
-                keystrokeCommands.append("keystroke return")
-            }
-        }
-
-        let script = """
-        tell application "\(appName)" to activate
-        delay 0.1
-        tell application "System Events"
-            tell process "\(appName)"
-                \(keystrokeCommands.joined(separator: "\n                "))
-            end tell
-        end tell
-        """
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-
-        let pipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = errorPipe
+        // Check tmux session exists
+        let checkProcess = Process()
+        checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        checkProcess.arguments = ["tmux", "-L", "mcp", "has-session", "-t", sessionName]
 
         do {
-            try process.run()
-            process.waitUntilExit()
+            try checkProcess.run()
+            checkProcess.waitUntilExit()
+            if checkProcess.terminationStatus != 0 {
+                return .error("tmux session '\(sessionName)' not found")
+            }
         } catch {
-            return .error("Failed to run AppleScript: \(error.localizedDescription)")
+            return .error("Failed to check tmux session: \(error.localizedDescription)")
         }
 
-        if process.terminationStatus != 0 {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorStr = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            return .error("AppleScript failed: \(errorStr)")
+        // Handle newlines: normalize literal \\n to actual newlines
+        let normalizedText = text.replacingOccurrences(of: "\\n", with: "\n")
+        let parts = normalizedText.components(separatedBy: "\n")
+
+        for (index, part) in parts.enumerated() {
+            // Send the text part using tmux send-keys -l (literal mode)
+            if !part.isEmpty {
+                let sendKeys = Process()
+                sendKeys.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                // Use -l for literal mode - sends text as-is without key name interpretation
+                sendKeys.arguments = ["tmux", "-L", "mcp", "send-keys", "-l", "-t", sessionName, part]
+
+                do {
+                    try sendKeys.run()
+                    sendKeys.waitUntilExit()
+
+                    if sendKeys.terminationStatus != 0 {
+                        return .error("tmux send-keys failed")
+                    }
+                } catch {
+                    return .error("Failed to send keys: \(error.localizedDescription)")
+                }
+            }
+
+            // Send Enter key after each part except the last
+            if index < parts.count - 1 {
+                let enterProcess = Process()
+                enterProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                enterProcess.arguments = ["tmux", "-L", "mcp", "send-keys", "-t", sessionName, "Enter"]
+
+                do {
+                    try enterProcess.run()
+                    enterProcess.waitUntilExit()
+                } catch {
+                    return .error("Failed to send Enter key: \(error.localizedDescription)")
+                }
+            }
         }
 
         return .json(.object([
             "status": .string("sent"),
-            "tty": .string(ttyPath),
+            "session_name": .string(sessionName),
             "characters": .int(text.count),
-            "message": .string("Text sent via keystrokes (window was briefly focused)")
+            "message": .string("Text sent via tmux (headless)")
         ]))
     }
-
 }

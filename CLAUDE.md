@@ -20,9 +20,9 @@ After building, restart Claude Code to pick up the new binary. Then use the MCP 
 
 ```
 1. check_permissions          → verify screen recording permission
-2. launch_app(bundle_id: "org.alacritty")  → get window_id + tty
+2. launch_terminal(bundle_id: "org.alacritty")  → get window_id + session_name
 3. start_recording(window_id: <id>)
-4. type_text(text: "echo hello\n", tty: "/dev/ttys00X")
+4. send_terminal_input(text: "echo hello\n", session_name: "mcp-xxxxxxxx")
 5. stop_recording()
 6. extract_frame(recording_path, timestamp: -1)  → verify
 ```
@@ -43,7 +43,7 @@ Sources/ScreenRecorderMCP/
 │   └── OutputWriter.swift      # AVAssetWriter encoding
 ├── Tools/
 │   ├── PermissionTools.swift   # check_permissions
-│   ├── WindowTools.swift       # list_windows, launch_app, type_text
+│   ├── WindowTools.swift       # list_windows, launch_terminal, send_terminal_input
 │   ├── RecordingTools.swift    # start_recording, stop_recording
 │   └── ProcessingTools.swift   # extract_frame
 └── Utils/
@@ -53,6 +53,8 @@ Sources/ScreenRecorderMCP/
 ## Key Patterns
 
 - **Window-only recording**: Simplified to only record specific windows (no screen/region/app modes)
+- **tmux-based input**: Uses `tmux send-keys` for headless terminal input (no window focus required)
+- **Vanilla shell environment**: Creates tmux sessions with `tmux -f /dev/null` and `/bin/zsh --no-rcs` for consistent, predictable behavior
 - **Actor isolation**: `ScreenRecorder` and `SessionManager` are actors for thread safety
 - **MCP tool protocol**: Each tool implements `MCPTool` with `definition` and `execute()`
 - **NSApplication required**: CLI must init NSApplication to connect to window server
@@ -66,8 +68,8 @@ Sources/ScreenRecorderMCP/
 
 1. `check_permissions` - Pre-flight permission check
 2. `list_windows` - Debug/fallback window enumeration
-3. `launch_app` - Launch terminal, return window_id + tty
-4. `type_text` - Send text directly to TTY (headless, no focus needed)
+3. `launch_terminal` - Launch terminal in tmux session, return window_id + session_name
+4. `send_terminal_input` - Send text via tmux send-keys (headless, no focus needed)
 5. `start_recording` - Record a window by ID (works in background)
 6. `stop_recording` - Finalize recording
 7. `extract_frame` - Extract frame for verification
@@ -76,4 +78,5 @@ Sources/ScreenRecorderMCP/
 
 1. **Permission denied**: Grant Screen Recording permission in System Settings
 2. **Window not found**: Window may have closed; use `list_windows` to verify
-3. **TTY not found**: Terminal may have closed; launch a new one
+3. **tmux session not found**: Terminal may have closed; launch a new one with `launch_terminal`
+4. **tmux not installed**: Install with `brew install tmux`

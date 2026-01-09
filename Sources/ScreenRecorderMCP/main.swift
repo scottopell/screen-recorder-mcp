@@ -19,10 +19,10 @@ let tools: [any MCPTool] = [
     // Permission check
     CheckPermissionsTool(),
 
-    // Window management
+    // Window/terminal management
     ListWindowsTool(),
-    LaunchAppTool(),
-    TypeTextTool(),
+    LaunchTerminalTool(),
+    SendTerminalInputTool(),
 
     // Recording control
     StartRecordingTool(),
